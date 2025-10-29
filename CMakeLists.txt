@@ -14,7 +14,7 @@ add_executable(Trading_Layer
         src/binance_websocket.cpp
         src/file_monitoring.cpp
         src/tools.cpp
-        src/dashboard_logger.cpp
+
 
 )
 

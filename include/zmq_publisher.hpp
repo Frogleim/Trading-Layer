@@ -1,28 +1,47 @@
 #pragma once
-#include <string>
+
 #include <zmq.hpp>
-#include <nlohmann/json.hpp>
+#include <string>
+#include <iostream>
+#include <thread>
+#include <chrono>
 
-using json = nlohmann::json;
+class ZMQComm {
+public:
+    // Constructor
+    ZMQComm() : context(1) {}
 
-extern zmq::context_t exec_ctx;
-extern zmq::socket_t exec_sub;
-extern zmq::socket_t exec_pub;
+    // -------- Publisher (sender) --------
+    void startPublisher(const std::string& endpoint, const std::string& baseMessage, int intervalMs = 1000) {
+        zmq::socket_t publisher(context, zmq::socket_type::pub);
+        publisher.bind(endpoint);
+        std::cout << "✅ Publisher bound to " << endpoint << std::endl;
 
-// --- Initialize subscriber & publisher sockets with configurable ports ---
-void init_zmq_execution(int sub_port = 5557, int pub_port = 5558);
+        int counter = 0;
+        while (true) {
+            std::string payload = baseMessage + " " + std::to_string(counter++);
+            zmq::message_t msg(payload.begin(), payload.end());
+            publisher.send(msg, zmq::send_flags::none);
+            std::cout << "Sent: " << payload << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
+        }
+    }
 
-// --- Background thread to handle incoming signals ---
-void start_zmq_listener();
+    // -------- Subscriber (receiver) --------
+    void startSubscriber(const std::string& endpoint) {
+        zmq::socket_t subscriber(context, zmq::socket_type::sub);
+        subscriber.connect(endpoint);
+        subscriber.set(zmq::sockopt::subscribe, "");
+        std::cout << "✅ Subscriber connected to " << endpoint << std::endl;
 
-// --- Publish confirmation back to monitoring layer ---
-void send_confirmation(const std::string& symbol, const std::string& status);
+        while (true) {
+            zmq::message_t msg;
+            subscriber.recv(msg, zmq::recv_flags::none);
+            std::string data(static_cast<char*>(msg.data()), msg.size());
+            std::cout << "Received: " << data << std::endl;
+        }
+    }
 
-// --- Subscribe to confirmations from execution layer (CLOSED events) ---
-void listen_for_closures(int pub_port = 5558);
-
-
-void init_zmq_connection(int pub_port);
-
-// --- Reliable confirmation (REQ/REP)
-void init_zmq_ack_server(int ack_port = 5560);
+private:
+    zmq::context_t context;
+};

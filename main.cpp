@@ -1,36 +1,30 @@
-//
-// Created by Gor Barseghyan on 28.10.25.
-//
-
-
 #include <iostream>
+#include <thread>
 #include "binance_websocket.hpp"
-
+#include "zmq_publisher.hpp"
 
 int main() {
     try {
         auto trader = std::make_shared<MonitorTrades>();
 
-        trader -> connect();
+        // ✅ Connect to Binance (private + markPrice)
+        trader->connect();
 
-        trader->start_async_read();
-        std::thread io_thread([&]() {
-            trader->run_event_loop();
+        // ✅ Start ZMQ listener for signals
+        trader->start_zmq_listener();
+
+        // ✅ Start periodic position checks in a background thread
+        std::thread position_thread([&]() {
+            while (true) {
+                trader->query_position();
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+            }
         });
 
-        while (true) {
-            trader->query_position();       // request position snapshot
-            std::this_thread::sleep_for(std::chrono::seconds(5));  // repeat every 5s
+        // ✅ Keep main thread alive with I/O event loops
+        trader->run_event_loop();
 
-            // Optional: monitor connection health
-            // if (!trader->is_connected()) {
-            //     std::cerr << "⚠️ Connection lost, attempting reconnect...\n";
-            //     trader->connect();
-            //     trader->start_async_read();
-            // }
-        }
-
-        io_thread.join();
+        position_thread.join(); // should never reach here normally
     }
     catch (const std::exception& e) {
         std::cerr << "❌ Fatal error: " << e.what() << std::endl;

@@ -4,14 +4,15 @@
 #include <boost/beast/websocket.hpp>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ssl/stream.hpp>
+#include <boost/beast/ssl.hpp>
 #include <nlohmann/json.hpp>
 #include <iostream>
 #include <string>
 #include <map>
 #include <unordered_set>
-#include "dashboard_logger.hpp"
 #include "file_monitoring.hpp"
 #include <fstream>
+#include <zmq.hpp>
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
@@ -19,7 +20,9 @@ namespace net = boost::asio;
 namespace ssl = boost::asio::ssl;
 using tcp = net::ip::tcp;
 using json = nlohmann::json;
-
+using tcp = boost::asio::ip::tcp;
+using ssl_stream = boost::asio::ssl::stream<tcp::socket>;
+using websocket_t = boost::beast::websocket::stream<ssl_stream>;
 
 std::string env_path = ".env";
 EnvData env = load_config(env_path);
@@ -28,11 +31,12 @@ EnvData env = load_config(env_path);
 const std::string MonitorTrades::API_KEY    = env.test_api_key;
 const std::string MonitorTrades::API_SECRET = env.test_api_secret;
 const std::string MonitorTrades::HOST       = env.test_base_url;
+const std::string MonitorTrades::MARK_PRICE_HOST = env.base_url;
 const std::string MonitorTrades::PORT       = "443";
 const std::string MonitorTrades::TARGET     = "/ws-fapi/v1";  // private WebSocket endpoint
 
-const double TP = 0.01;
-const double SL = 0.005;
+const double TP = 0.003;
+const double SL = 0.002;
 
 // ====== Global ASIO/Beast objects ======
 namespace {
@@ -55,119 +59,194 @@ std::pair<double, double> calculate_sl_tp(std::string side, double entry_price) 
 
 // ====== Class Implementation ======
 MonitorTrades::MonitorTrades()
-    : ssl_ctx_(boost::asio::ssl::context::tlsv12_client),
-      resolver_(io_ctx_),
-      ws_(io_ctx_, ssl_ctx_),
-      work_guard_(boost::asio::make_work_guard(io_ctx_)),
+    : ssl_ctx_(ssl::context::tlsv12_client),
+      resolver_private_(io_private_),
+      resolver_mark_(io_mark_),
+      work_guard_private_(net::make_work_guard(io_private_)),
+      work_guard_mark_(net::make_work_guard(io_mark_)),
       connected_(false)
 {
     ssl_ctx_.set_default_verify_paths();
+
+    // Start independent IO threads
+    thread_private_ = std::thread([this](){ io_private_.run(); });
+    thread_mark_    = std::thread([this](){ io_mark_.run(); });
 }
 
-MonitorTrades::~MonitorTrades() {
-    work_guard_.reset();
-    io_ctx_.stop();
+MonitorTrades::~MonitorTrades(){
+    work_guard_private_.reset();
+    work_guard_mark_.reset();
+    io_private_.stop();
+    io_mark_.stop();
+
+    if(thread_private_.joinable()) thread_private_.join();
+    if(thread_mark_.joinable())    thread_mark_.join();
 }
 
 // -------------------------
-void MonitorTrades::connect() {
+void MonitorTrades::connect(){
     try {
-        auto const results = resolver_.resolve(HOST, PORT);
-        net::connect(ws_.next_layer().next_layer(), results.begin(), results.end());
+        // === PRIVATE WS ===
+        ws_ = std::make_unique<websocket_t>(io_private_, ssl_ctx_);
+        auto results = resolver_private_.resolve(HOST, PORT);
+        net::connect(ws_->next_layer().next_layer(), results.begin(), results.end());
 
-        if (!SSL_set_tlsext_host_name(ws_.next_layer().native_handle(), HOST.c_str()))
+        if(!SSL_set_tlsext_host_name(ws_->next_layer().native_handle(), HOST.c_str()))
             throw boost::system::system_error(
-                {static_cast<int>(::ERR_get_error()), boost::asio::error::get_ssl_category()},
-                "Failed to set SNI hostname");
+                {static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()},
+                "Failed SNI hostname");
 
-        ws_.next_layer().handshake(ssl::stream_base::client);
-        ws_.handshake(HOST, TARGET);
-
+        ws_->next_layer().handshake(ssl::stream_base::client);
+        ws_->handshake(HOST, TARGET);
         connected_ = true;
-        std::cout << "✅ Connected to " << HOST << TARGET << std::endl;
+        std::cout<<"✅ Connected to "<<HOST<<TARGET<<std::endl;
+        start_async_read();
 
-    }
-    catch (std::exception& e) {
-        log_to_dashboard(e.what());
-        std::cerr << "❌ Connect error: " << e.what() << std::endl;
-        connected_ = false;
+        // === MARKPRICE WS ===
+        std::vector<std::string> symbols={"aiausdt","coaiusdt"};
+        std::string combined="/stream?streams=";
+        for(size_t i=0;i<symbols.size();++i){
+            combined+=symbols[i]+"@markPrice@1s";
+            if(i+1<symbols.size()) combined+="/";
+        }
 
+        ws_mark_ = std::make_unique<websocket_t>(io_mark_, ssl_ctx_);
+        auto mark_results = resolver_mark_.resolve(MARK_PRICE_HOST, PORT);
+        net::connect(ws_mark_->next_layer().next_layer(), mark_results.begin(), mark_results.end());
+
+        if(!SSL_set_tlsext_host_name(ws_mark_->next_layer().native_handle(), MARK_PRICE_HOST.c_str()))
+            throw boost::system::system_error(
+                {static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()},
+                "Failed SNI hostname");
+
+        ws_mark_->next_layer().handshake(ssl::stream_base::client);
+        ws_mark_->handshake(MARK_PRICE_HOST, combined);
+        std::cout<<"✅ Subscribed to combined markPrice stream:\n"
+                 <<MARK_PRICE_HOST<<combined<<std::endl;
+
+        start_markprice_read();
+
+    }catch(const std::exception& e){
+        std::cerr<<"❌ Connect error: "<<e.what()<<std::endl;
+        connected_=false;
     }
 }
 
+void MonitorTrades::start_markprice_read() {
+    auto mark_buffer = std::make_shared<beast::flat_buffer>();
 
-void MonitorTrades::display_dashboard() {
-    using namespace std::chrono_literals;
-
-    while (true) {
-        std::ostringstream out;
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-
-            out << "\033[H\033[J";  // clear screen
-            out << "🧠 VIRTUUM HFT DASHBOARD (LIVE)\n";
-            out << "Started: " << format_time(START_TIME) << "\n";
-            out << "───────────────────────────────────────────────────────────────\n";
-            out << std::left << std::setw(10) << "Symbol"
-                << std::setw(10) << "Status"
-                << std::setw(10) << "Dir"
-                << std::setw(12) << "Entry"
-                << std::setw(12) << "UnrealPnL"
-                << std::setw(12) << "TotalPnL"
-                << std::setw(8)  << "Trades"
-                << std::setw(8)  << "Open" << "\n";
-            out << "───────────────────────────────────────────────────────────────\n";
-
-            double total_pnl = 0.0;
-            for (auto& [sym, t] : active_positions) {
-                double total_coin_pnl = t.realized_pnl + t.unrealized_pnl;
-                total_pnl += total_coin_pnl;
-
-                std::string pnl_color =
-                    (total_coin_pnl > 0 ? "\033[32m" :
-                     (total_coin_pnl < 0 ? "\033[31m" : "\033[0m"));
-
-                out << std::left << std::setw(10) << sym
-                    << std::setw(10) << (t.active ? "OPEN" : "IDLE")
-                    << std::setw(10) << (t.direction.empty() ? "-" : t.direction)
-                    << std::setw(12) << std::fixed << std::setprecision(4) << t.entry
-                    << pnl_color << std::setw(12) << std::fixed << std::setprecision(2)
-                    << t.unrealized_pnl << "\033[0m"
-                    << pnl_color << std::setw(12) << std::fixed << std::setprecision(2)
-                    << total_coin_pnl << "\033[0m"
-                    << std::setw(8)  << t.total_trades
-                    << std::setw(8)  << t.open_trades << "\n";
+    ws_mark_->async_read(*mark_buffer,
+        [this, mark_buffer](beast::error_code ec, std::size_t bytes_transferred) {
+            if (ec) {
+                std::cerr << "❌ MarkPrice read error: " << ec.message() << std::endl;
+                return;
             }
-            out << "───────────────────────────────────────────────────────────────\n";
-            out << "🛰️  WSS Status:\n";
-            out << "   Market Data: " << (g_market_wss_alive ? "✅" : "❌") << "\n";
-            out << "   Trading/Account: " << (g_trading_wss_alive ? "✅" : "❌") << "\n";
-            out << "───────────────────────────────────────────────────────────────\n";
-            out << "💰 TOTAL PNL: "
-                << (total_pnl >= 0 ? "\033[32m" : "\033[31m")
-                << std::fixed << std::setprecision(2) << total_pnl << " USDT\033[0m\n";
-            out << "───────────────────────────────────────────────────────────────\n";
-            out << "📜 LOGS:\n";
-        }
 
-        // print logs
-        {
-            std::lock_guard<std::mutex> lock(log_mutex);
-            for (auto& line : recent_logs)
-                out << line << "\n";
-        }
+            std::string msg = beast::buffers_to_string(mark_buffer->data());
+            mark_buffer->consume(mark_buffer->size());
 
-        out << "───────────────────────────────────────────────────────────────\n";
-        out << "Press Ctrl+C to exit.\n";
+            try {
+                auto j = nlohmann::json::parse(msg);
 
-        {
-            std::lock_guard<std::mutex> io_lock(io_mutex);
-            std::cout << out.str() << std::flush;
-        }
+                // ✅ Combined stream structure: { "stream": "...", "data": {...} }
+                if (j.contains("stream") && j.contains("data")) {
+                    const auto& d = j["data"];
+                    std::string symbol = d.value("s", "");
+                    double mark_price  = std::stod(d.value("p", "0"));
 
-        std::this_thread::sleep_for(500ms);
-    }
+                    if (symbol.empty()) return;
+
+                    // 🧩 If we have an active trade for this symbol
+                    if (active_trades_.count(symbol)) {
+                        auto& trade = active_trades_.at(symbol);
+
+                        // Skip if already closing
+                        if (closing_trades_.count(symbol))
+                            return;
+
+                        bool hit_tp = false;
+                        bool hit_sl = false;
+
+                        if (trade.side == "LONG") {
+                            hit_tp = mark_price >= trade.tp;
+                            hit_sl = mark_price <= trade.sl;
+                        } else if (trade.side == "SHORT") {
+                            hit_tp = mark_price <= trade.tp;
+                            hit_sl = mark_price >= trade.sl;
+                        }
+
+                        if (hit_tp || hit_sl) {
+                            std::string reason = hit_tp ? "🎯 TP hit" : "🛑 SL hit";
+                            std::cout << reason << " for " << symbol
+                                      << " mark=" << mark_price
+                                      << " entry=" << trade.entry
+                                      << " tp=" << trade.tp
+                                      << " sl=" << trade.sl << std::endl;
+
+                            closing_trades_[symbol] = true;
+                            active_trades_.erase(symbol);
+
+                            // ✅ Execute close order safely inside the private io_context
+                            net::post(io_private_, [this, symbol, trade]() {
+                                std::string close_side =
+                                    (trade.side == "LONG") ? "SELL" : "BUY";
+                                market_order(close_side, symbol, trade.amount, trade.entry);
+                            });
+                        }
+                    }
+                }
+
+            } catch (const std::exception& e) {
+                std::cerr << "❌ MarkPrice parse error: " << e.what() << std::endl;
+            }
+
+            // Continue reading recursively
+            start_markprice_read();
+        });
 }
+
+
+void MonitorTrades::start_zmq_listener(){
+    zmq_thread_=std::thread([this](){
+        try{
+            zmq::socket_t subscriber(zmq_ctx_,zmq::socket_type::sub);
+            const std::string endpoint="tcp://localhost:5555";
+            subscriber.connect(endpoint);
+            subscriber.set(zmq::sockopt::subscribe,"");
+            std::cout<<"📡 Listening for signals on "<<endpoint<<std::endl;
+
+            while(true){
+                zmq::message_t msg;
+                if(!subscriber.recv(msg,zmq::recv_flags::none)) continue;
+                auto t_recv=std::chrono::high_resolution_clock::now();
+                std::string data(static_cast<char*>(msg.data()),msg.size());
+                std::cout<<"📨 Received signal: "<<data<<std::endl;
+
+                std::istringstream iss(data);
+                std::string symbol,direction;
+                iss>>symbol>>direction;
+                if(symbol.empty()||direction.empty()) continue;
+
+                double amount=5.0;
+                double price=0.0;
+                std::string side=(direction=="LONG")?"BUY":"SELL";
+
+                net::post(io_private_,[this,side,symbol,amount,price,t_recv](){
+                    auto t_exec=std::chrono::high_resolution_clock::now();
+                    auto latency_us=
+                        std::chrono::duration_cast<std::chrono::microseconds>(t_exec-t_recv).count();
+                    std::cout<<"⏱️ Signal-to-order latency for "<<symbol<<" = "
+                             <<latency_us<<" µs ("<<latency_us/1000.0<<" ms)\n";
+                    market_order(side,symbol,amount,price);
+                });
+            }
+        }catch(const std::exception& e){
+            std::cerr<<"❌ ZMQ listener error: "<<e.what()<<std::endl;
+        }
+    });
+    zmq_thread_.detach();
+}
+
 
 // -------------------------
 void MonitorTrades::query_position() {
@@ -176,20 +255,27 @@ void MonitorTrades::query_position() {
         return;
     }
 
-    long long ts = current_timestamp_ms();
-    std::map<std::string, std::string> params = {
-        {"apiKey", API_KEY},
-        {"timestamp", std::to_string(ts)}
-    };
-    params["signature"] = generate_signature(params, API_SECRET);
+    net::post(io_private_, [this]() {
+        long long ts = current_timestamp_ms();
+        std::map<std::string, std::string> params = {
+            {"apiKey", API_KEY},
+            {"timestamp", std::to_string(ts)}
+        };
+        params["signature"] = generate_signature(params, API_SECRET);
 
-    json req = {
-        {"id", generate_uuid()},
-        {"method", "v2/account.position"},
-        {"params", params}
-    };
+        json req = {
+            {"id", generate_uuid()},
+            {"method", "v2/account.position"},
+            {"params", params}
+        };
 
-    ws_.write(net::buffer(req.dump()));
+        try {
+            ws_->write(net::buffer(req.dump()));
+            std::cout << "📤 Requested account positions...\n";
+        } catch (const std::exception& e) {
+            std::cerr << "❌ query_position error: " << e.what() << std::endl;
+        }
+    });
 }
 
 // -------------------------
@@ -199,6 +285,11 @@ void MonitorTrades::market_order(const std::string& side,
                                  double entry_price) {
     if (!connected_) {
         std::cerr << "⚠️ Not connected, skipping close order.\n";
+        return;
+    }
+    if (quantity <= 0) {
+        std::cerr << "⚠️ Skipping market_order for " << symbol
+                  << " because quantity=" << quantity << " (<=0)\n";
         return;
     }
 
@@ -227,7 +318,7 @@ void MonitorTrades::market_order(const std::string& side,
     };
 
     try {
-        ws_.write(net::buffer(req.dump()));
+        ws_->write(net::buffer(req.dump()));
         // closing_trades_[symbol] = true;     // lock until confirmed
         // active_trades_.erase(symbol);
 
@@ -244,12 +335,24 @@ void MonitorTrades::market_order(const std::string& side,
 
 // -------------------------
 void MonitorTrades::start_async_read() {
-    ws_.async_read(
+    ws_->async_read(
         buffer_,
         [this](beast::error_code ec, std::size_t bytes_transferred) {
             if (ec) {
                 std::cerr << "❌ Read error: " << ec.message() << std::endl;
-                log_to_dashboard("❌ Read error from start_async_read()");
+
+                // Common non-fatal disconnects
+                if (ec == websocket::error::closed || ec == beast::websocket::error::closed
+                    || ec.message() == "End of file") {
+
+                    std::cerr << "🔁 Attempting to reconnect to Binance...\n";
+                    try {
+                        ws_->next_layer().shutdown();
+                    } catch (...) {}
+
+                    connected_ = false;
+                    connect();   // reconnect logic
+                }
                 return;
             }
 
@@ -271,7 +374,6 @@ void MonitorTrades::start_async_read() {
                         }
                     }
                 }
-
                 // 🧩 2️⃣ Handle position snapshots
                 if (j.contains("result") && j["result"].is_array()) {
                     std::unordered_set<std::string> snapshot_symbols;
@@ -287,10 +389,8 @@ void MonitorTrades::start_async_read() {
 
                         // --- A. Handle closed positions (amt = 0) ---
                         if (posAmt == 0) {
-                            if (closing_trades_.count(symbol)) {
-                                std::cout << "✅ " << symbol << " confirmed closed (positionAmt=0)\n";
-                                closing_trades_.erase(symbol);
-                            }
+                            std::cout << "✅ " << symbol << " confirmed closed (positionAmt=0)\n";
+                            closing_trades_.erase(symbol);
                             active_trades_.erase(symbol);
                             continue;
                         }
@@ -300,44 +400,18 @@ void MonitorTrades::start_async_read() {
                             std::cout << "⏳ Waiting for close confirmation: " << symbol << std::endl;
                             continue;
                         }
+                        std::cout << "\n📈 Active Trades (" << active_trades_.size() << "):\n";
 
                         // --- C. Update active position ---
-                        active_trades_[symbol] = posAmt;
-                        std::string side = posAmt > 0 ? "LONG" : "SHORT";
-                        auto [tp, sl] = calculate_sl_tp(side, entry);
+                        ActiveTrade t;
+                        t.side   = posAmt > 0 ? "LONG" : "SHORT";
+                        t.entry  = entry;
+                        t.amount = std::abs(posAmt);
+                        auto [tp, sl] = calculate_sl_tp(t.side, entry);
+                        t.tp = tp;
+                        t.sl = sl;
+                        active_trades_[symbol] = t;
 
-                        // --- D. TP/SL logic ---
-                        if (posAmt > 0) { // LONG
-                            if (markPrice >= tp) {
-                                std::cout << "🎯 TP Hit! Closing LONG for " << symbol << std::endl;
-                                market_order("SELL", symbol, std::abs(posAmt), entry);
-                                remove_symbol_from_file(symbol);
-
-                                continue;
-                            }
-                            if (markPrice <= sl) {
-                                std::cout << "🛑 SL Hit! Closing LONG for " << symbol << std::endl;
-                                market_order("SELL", symbol, std::abs(posAmt), entry);
-                                remove_symbol_from_file(symbol);
-
-                                continue;
-                            }
-                        } else if (posAmt < 0) { // SHORT
-                            if (markPrice <= tp) {
-                                std::cout << "🎯 TP Hit! Closing SHORT for " << symbol << std::endl;
-                                market_order("BUY", symbol, std::abs(posAmt), entry);
-                                remove_symbol_from_file(symbol);
-
-                                continue;
-                            }
-                            if (markPrice >= sl) {
-                                std::cout << "🛑 SL Hit! Closing SHORT for " << symbol << std::endl;
-                                market_order("BUY", symbol, std::abs(posAmt), entry);
-                                remove_symbol_from_file(symbol);
-
-                                continue;
-                            }
-                        }
 
                         std::cout << "📊 Position Update: "
                                   << symbol
@@ -359,10 +433,49 @@ void MonitorTrades::start_async_read() {
                     }
 
                     // --- F. Display active trades summary ---
-                    std::cout << "\n📈 Active Trades (" << active_trades_.size() << "):\n";
-                    for (const auto& [sym, amt] : active_trades_)
-                        std::cout << " • " << sym << " | amt=" << amt << std::endl;
-                    std::cout << "────────────────────────────\n";
+                    static size_t last_lines = 0;
+
+                    if (last_lines > 0)
+                        std::cout << "\033[" << last_lines << "A";
+
+                    {
+                        static size_t last_lines = 0; // remember how many lines were printed last time
+                        std::lock_guard<std::mutex> lock(log_mutex);
+
+                        std::ostringstream oss;
+                        oss << "────────────────────────────\n";
+                        oss << "📈 Active Trades (" << active_trades_.size() << "):\n";
+
+                        if (active_trades_.empty()) {
+                            oss << " • none\n";
+                        } else {
+                            for (const auto& [sym, trade] : active_trades_) {
+                                oss << " • " << sym
+                                    << " | side="  << trade.side
+                                    << " | amt="   << trade.amount
+                                    << " | entry=" << trade.entry
+                                    << " | tp="    << trade.tp
+                                    << " | sl="    << trade.sl
+                                    << "\n";
+                            }
+                        }
+
+                        oss << "────────────────────────────\n";
+
+                        std::string block = oss.str();
+                        size_t current_lines = std::count(block.begin(), block.end(), '\n');
+
+                        // Move cursor up to overwrite previous block (if any)
+                        if (last_lines > 0)
+                            std::cout << "\033[" << last_lines << "A";
+
+                        // Rewrite updated dashboard
+                        std::cout << block << std::flush;
+
+                        // Update line count for next iteration
+                        last_lines = current_lines;
+                    }
+
                 }
                 else if (!j.contains("result")) {
                     std::cout << "📩 Other message: " << msg << std::endl;
@@ -379,5 +492,7 @@ void MonitorTrades::start_async_read() {
 
 // -------------------------
 void MonitorTrades::run_event_loop() {
-    io_ctx_.run();
+    // just block main thread until background I/O threads finish
+    if (thread_private_.joinable()) thread_private_.join();
+    if (thread_mark_.joinable())    thread_mark_.join();
 }
