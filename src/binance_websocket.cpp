@@ -105,7 +105,10 @@ void MonitorTrades::connect(){
         start_async_read();
 
         // === MARKPRICE WS ===
-        std::vector<std::string> symbols={"aiausdt","coaiusdt"};
+        std::vector<std::string> symbols = {
+            "aiausdt",
+            "coaiusdt",
+        };
         std::string combined="/stream?streams=";
         for(size_t i=0;i<symbols.size();++i){
             combined+=symbols[i]+"@markPrice@1s";
@@ -255,7 +258,7 @@ void MonitorTrades::start_zmq_listener(){
 void MonitorTrades::send_confirmation(std::string symbol) {
     try {
         std::lock_guard<std::mutex> lock(zmq_mutex_);
-        std::string message = "CONFIRM " + symbol;
+        std::string message = "CLOSED " + symbol;
         zmq_pub_.send(zmq::buffer(message), zmq::send_flags::none);
         std::cout << "✅ Sent trade confirmation: " << message << std::endl;
     } catch (const std::exception& e) {
