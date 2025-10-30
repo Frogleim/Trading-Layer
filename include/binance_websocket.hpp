@@ -69,6 +69,7 @@ public:
     void start_async_read();
     void start_markprice_read();
     void start_zmq_listener();
+    void send_confirmation(std::string symbol);
     void market_order(const std::string& side,
                       const std::string& symbol,
                       double quantity,
@@ -83,8 +84,9 @@ public:
 private:
     // --- ZMQ ---
     zmq::context_t zmq_ctx_{1};
+    zmq::socket_t zmq_pub_;
     std::thread zmq_thread_;
-
+    std::mutex zmq_mutex_;
     // --- Independent I/O contexts ---
     net::io_context io_private_;
     net::io_context io_mark_;

@@ -64,10 +64,12 @@ MonitorTrades::MonitorTrades()
       resolver_mark_(io_mark_),
       work_guard_private_(net::make_work_guard(io_private_)),
       work_guard_mark_(net::make_work_guard(io_mark_)),
-      connected_(false)
+      connected_(false),
+        zmq_pub_(zmq_ctx_, zmq::socket_type::pub)
 {
     ssl_ctx_.set_default_verify_paths();
-
+    zmq_pub_.bind("tcp://*:5556");
+    std::cout << "📡 ZMQ publisher bound on tcp://*:5556\n";
     // Start independent IO threads
     thread_private_ = std::thread([this](){ io_private_.run(); });
     thread_mark_    = std::thread([this](){ io_mark_.run(); });
@@ -184,7 +186,6 @@ void MonitorTrades::start_markprice_read() {
                                       << " sl=" << trade.sl << std::endl;
 
                             closing_trades_[symbol] = true;
-                            active_trades_.erase(symbol);
 
                             // ✅ Execute close order safely inside the private io_context
                             net::post(io_private_, [this, symbol, trade]() {
@@ -192,6 +193,9 @@ void MonitorTrades::start_markprice_read() {
                                     (trade.side == "LONG") ? "SELL" : "BUY";
                                 market_order(close_side, symbol, trade.amount, trade.entry);
                             });
+                            active_trades_.erase(symbol);
+                            send_confirmation(symbol);
+
                         }
                     }
                 }
@@ -245,6 +249,18 @@ void MonitorTrades::start_zmq_listener(){
         }
     });
     zmq_thread_.detach();
+}
+
+
+void MonitorTrades::send_confirmation(std::string symbol) {
+    try {
+        std::lock_guard<std::mutex> lock(zmq_mutex_);
+        std::string message = "CONFIRM " + symbol;
+        zmq_pub_.send(zmq::buffer(message), zmq::send_flags::none);
+        std::cout << "✅ Sent trade confirmation: " << message << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "❌ Failed to send ZMQ message: " << e.what() << std::endl;
+    }
 }
 
 
