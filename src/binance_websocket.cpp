@@ -35,8 +35,8 @@ const std::string MonitorTrades::MARK_PRICE_HOST = env.base_url;
 const std::string MonitorTrades::PORT       = "443";
 const std::string MonitorTrades::TARGET     = "/ws-fapi/v1";  // private WebSocket endpoint
 
-const double TP = 0.003;
-const double SL = 0.002;
+const double TP = 0.006;
+const double SL = 0.003;
 
 // ====== Global ASIO/Beast objects ======
 namespace {
@@ -68,8 +68,8 @@ MonitorTrades::MonitorTrades()
         zmq_pub_(zmq_ctx_, zmq::socket_type::pub)
 {
     ssl_ctx_.set_default_verify_paths();
-    zmq_pub_.bind("tcp://*:5556");
-    std::cout << "📡 ZMQ publisher bound on tcp://*:5556\n";
+    zmq_pub_.bind("tcp://localhost:5556");
+    std::cout << "📡 ZMQ publisher bound on tcp://localhost:5556\n";
     // Start independent IO threads
     thread_private_ = std::thread([this](){ io_private_.run(); });
     thread_mark_    = std::thread([this](){ io_mark_.run(); });
@@ -108,6 +108,11 @@ void MonitorTrades::connect(){
         std::vector<std::string> symbols = {
             "aiausdt",
             "coaiusdt",
+            "4usdt",
+            "bankusdt",
+            "cakeusdt",
+            "takeusdt",
+            "vvvusdt"
         };
         std::string combined="/stream?streams=";
         for(size_t i=0;i<symbols.size();++i){
@@ -316,7 +321,22 @@ void MonitorTrades::market_order(const std::string& side,
         quantity = 380;
     } else if (symbol == "coaiusdt") {
         quantity = 180;
+    } else if (symbol == "4usdt") {
+        quantity = 10000;
+    } else if (symbol == "bankusdt") {
+        quantity = 10000;
+    } else if (symbol == "cakeusdt") {
+        quantity = 250;
+    }else if (symbol == "takeusdt") {
+        quantity = 2100;
+    } else if (symbol == "vvvusdt") {
+        quantity = 300;
     }
+    //
+    // "bankusdt",
+    //             "cakeusdt",
+    //             "takeusdt",
+    //             "vvvusdt"
 
     long long ts = current_timestamp_ms();
     std::map<std::string, std::string> params = {
@@ -485,10 +505,7 @@ void MonitorTrades::start_async_read() {
                         size_t current_lines = std::count(block.begin(), block.end(), '\n');
 
                         // Move cursor up to overwrite previous block (if any)
-                        if (last_lines > 0)
-                            std::cout << "\033[" << last_lines << "A";
-
-                        // Rewrite updated dashboard
+                        std::cout << "\033[2J\033[H";
                         std::cout << block << std::flush;
 
                         // Update line count for next iteration
