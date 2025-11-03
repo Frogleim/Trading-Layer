@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 
 # Dependencies
 find_package(nlohmann_json REQUIRED)
-find_package(Boost 1.84 REQUIRED)
+find_package(Boost 1.83 REQUIRED)
 find_package(CURL REQUIRED)
 find_package(OpenSSL REQUIRED)
 
@@ -39,5 +39,5 @@ target_link_libraries(Trading_Layer PRIVATE
         OpenSSL::SSL
         OpenSSL::Crypto
         zmq
-        #        uuid
+        uuid
 )
