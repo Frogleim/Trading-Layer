@@ -31,7 +31,7 @@ def compute_obi(df):
 
 
 # ===== FETCH DATA =====
-def fetch_klines_full_month(symbol: str, interval="1m", days=10):
+def fetch_klines_full_month(symbol: str, interval="5m", days=10):
     url = "https://fapi.binance.com/fapi/v1/klines"
     end_time = int(time.time() * 1000)  # current timestamp in ms
     start_time = end_time - days * 24 * 60 * 60 * 1000

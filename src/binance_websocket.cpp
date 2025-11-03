@@ -27,16 +27,19 @@ using websocket_t = boost::beast::websocket::stream<ssl_stream>;
 std::string env_path = ".env";
 EnvData env = load_config(env_path);
 
-// ====== Static configuration ======
-const std::string MonitorTrades::API_KEY    = env.test_api_key;
-const std::string MonitorTrades::API_SECRET = env.test_api_secret;
-const std::string MonitorTrades::HOST       = env.test_base_url;
-const std::string MonitorTrades::MARK_PRICE_HOST = env.base_url;
-const std::string MonitorTrades::PORT       = "443";
-const std::string MonitorTrades::TARGET     = "/ws-fapi/v1";  // private WebSocket endpoint
 
-const double TP = 0.006;
-const double SL = 0.003;
+
+// ====== Static configuration ======
+const std::string MonitorTrades::API_KEY    = env.is_testnet ? env.test_api_key    : env.api_key;
+const std::string MonitorTrades::API_SECRET = env.is_testnet ? env.test_api_secret : env.api_secret;
+const std::string MonitorTrades::HOST       = env.is_testnet ? env.test_base_url   : env.base_url;
+const std::string MonitorTrades::MARK_PRICE_HOST = env.market_data;
+
+const std::string MonitorTrades::PORT   = "443";
+const std::string MonitorTrades::TARGET = "/ws-fapi/v1";  // private WebSocket endpoint
+
+const double TP = env.TP;
+const double SL = env.SL;
 
 // ====== Global ASIO/Beast objects ======
 namespace {
@@ -318,7 +321,7 @@ void MonitorTrades::market_order(const std::string& side,
     }
 
     if (symbol == "aiausdt") {
-        quantity = 380;
+        quantity = 5;
     } else if (symbol == "coaiusdt") {
         quantity = 180;
     } else if (symbol == "4usdt") {
@@ -472,13 +475,9 @@ void MonitorTrades::start_async_read() {
                     }
 
                     // --- F. Display active trades summary ---
+                    // --- F. Display active trades summary ---
                     static size_t last_lines = 0;
-
-                    if (last_lines > 0)
-                        std::cout << "\033[" << last_lines << "A";
-
                     {
-                        static size_t last_lines = 0; // remember how many lines were printed last time
                         std::lock_guard<std::mutex> lock(log_mutex);
 
                         std::ostringstream oss;
@@ -499,16 +498,23 @@ void MonitorTrades::start_async_read() {
                             }
                         }
 
-                        oss << "────────────────────────────\n";
+                        oss << "────────────────────────────"; // ⚠️ no trailing \n here
 
                         std::string block = oss.str();
-                        size_t current_lines = std::count(block.begin(), block.end(), '\n');
+                        size_t current_lines = std::count(block.begin(), block.end(), '\n') + 1;
 
-                        // Move cursor up to overwrite previous block (if any)
-                        std::cout << "\033[2J\033[H";
-                        std::cout << block << std::flush;
+                        // Move cursor up to overwrite previous dashboard fully
+                        if (last_lines > 0)
+                            std::cout << "\033[" << last_lines << "F"; // Move cursor up N lines to start of block
 
-                        // Update line count for next iteration
+                        // Now clear each line before printing the new block
+                        std::istringstream iss(block);
+                        std::string line;
+                        while (std::getline(iss, line)) {
+                            std::cout << "\033[2K" << line << "\n"; // 2K clears entire line
+                        }
+
+                        std::cout << std::flush;
                         last_lines = current_lines;
                     }
 

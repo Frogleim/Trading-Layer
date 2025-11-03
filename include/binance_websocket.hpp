@@ -57,8 +57,13 @@ public:
     static const std::string API_SECRET;
     static const std::string HOST;
     static const std::string MARK_PRICE_HOST;
+    static const std::string TEST_HOST;
     static const std::string PORT;
     static const std::string TARGET;
+    static const std::string TEST_API_KEY;
+    static const std::string TEST_API_SECRET;
+    static const double TP;
+    static const double SL;
 
     // --- Lifecycle ---
     MonitorTrades();

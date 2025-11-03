@@ -16,6 +16,10 @@ struct EnvData {
     std::string test_api_key;
     std::string test_api_secret;
     std::string test_base_url;
+    std::string market_data;
+    bool is_testnet;
+    double TP;
+    double SL;
 };
 
 

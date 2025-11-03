@@ -29,8 +29,21 @@ void load_env(const std::string& path) {
 }
 
 
+auto parse_double = [](const std::string& val, double default_value = 0.0) -> double {
+    if (val.empty()) return default_value;
+    try {
+        return std::stod(val);
+    } catch (const std::exception& e) {
+        std::cerr << "⚠️ Invalid double in env: " << val
+                  << " (" << e.what() << ")" << std::endl;
+        return default_value;
+    }
+};
+
+
 EnvData load_config(const std::string& path) {
     load_env(path);
+
     auto safe_getenv = [](const char* name) -> std::string {
         const char* val = std::getenv(name);
         if (!val) {
@@ -39,16 +52,31 @@ EnvData load_config(const std::string& path) {
         }
         return val;
     };
+
+    // Helper for boolean parsing
+    auto parse_bool = [](const std::string& val, bool default_value = false) -> bool {
+        std::string lower = val;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        if (lower == "1" || lower == "true" || lower == "yes" || lower == "on")
+            return true;
+        if (lower == "0" || lower == "false" || lower == "no" || lower == "off")
+            return false;
+        return default_value;
+    };
+
     EnvData cfg;
-    cfg.test_api_key    =safe_getenv("TEST_API_KEY");
-    cfg.test_api_secret =safe_getenv("TEST_API_SECRET");
-    cfg.api_key         =safe_getenv("API_KEY");
-    cfg.api_secret      =safe_getenv("API_SECRET");
-    cfg.base_url        =safe_getenv("BASE_URL");
-    cfg.test_base_url   =safe_getenv("TEST_BASE_URL");
+    cfg.is_testnet      = parse_bool(safe_getenv("IS_TESTNET"), false);
+    cfg.test_api_key    = safe_getenv("TEST_API_KEY");
+    cfg.test_api_secret = safe_getenv("TEST_API_SECRET");
+    cfg.api_key         = safe_getenv("API_KEY");
+    cfg.api_secret      = safe_getenv("API_SECRET");
+    cfg.base_url        = safe_getenv("BASE_URL");
+    cfg.test_base_url   = safe_getenv("TEST_BASE_URL");
+    cfg.market_data     = safe_getenv("MARKET_DATA");
+    cfg.TP              = parse_double(safe_getenv("TP"), 0.0);
+    cfg.SL              = parse_double(safe_getenv("SL"), 0.0);
 
     return cfg;
-
 }
 
 
