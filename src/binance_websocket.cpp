@@ -111,14 +111,16 @@ void MonitorTrades::connect(){
 
         // === MARKPRICE WS ===
         std::vector<std::string> symbols = {
-            "aiausdt",
-            "coaiusdt",
-            "4usdt",
-            "bankusdt",
-            "cakeusdt",
-            "takeusdt",
-            "vvvusdt"
-        };
+            "1000satsusdt",
+            "jellyjellyusdt",
+                    "gtcusdt",
+                    "flmusdt",
+                    "labusdt",
+                    "coaiusdt",
+                    "evaausdt",
+                    "pippinusdt"
+            };
+
         std::string combined="/stream?streams=";
         for(size_t i=0;i<symbols.size();++i){
             combined+=symbols[i]+"@markPrice@1s";
@@ -316,37 +318,37 @@ void MonitorTrades::query_position() {
 void MonitorTrades::market_order(const std::string& side,
                                  const std::string& symbol,
                                  double quantity,
-                                 double entry_price) {
+                                 double entry_price)
+{
     if (!connected_) {
         std::cerr << "⚠️ Not connected, skipping close order.\n";
         return;
     }
+
+    // === replace the if/else chain ===
+    static const std::unordered_map<std::string, double> quantity_map = {
+        {"1000satsusdt", 35000000},
+        {"jellyjellyusdt", 36},
+        {"gtcusdt", 1200},
+        {"flmusdt", 10000},
+        {"labusdt", 250},
+        {"coaiusdt", 2100},
+        {"evaausdt", 300},
+        {"pippinusdt", 300},
+
+
+    };
+
+    // check if symbol is known and override
+    if (auto it = quantity_map.find(symbol); it != quantity_map.end()) {
+        quantity = it->second;
+    }
+
     if (quantity <= 0) {
         std::cerr << "⚠️ Skipping market_order for " << symbol
                   << " because quantity=" << quantity << " (<=0)\n";
         return;
     }
-
-    if (symbol == "aiausdt") {
-        quantity = 5;
-    } else if (symbol == "coaiusdt") {
-        quantity = 180;
-    } else if (symbol == "4usdt") {
-        quantity = 10000;
-    } else if (symbol == "bankusdt") {
-        quantity = 10000;
-    } else if (symbol == "cakeusdt") {
-        quantity = 250;
-    }else if (symbol == "takeusdt") {
-        quantity = 2100;
-    } else if (symbol == "vvvusdt") {
-        quantity = 300;
-    }
-    //
-    // "bankusdt",
-    //             "cakeusdt",
-    //             "takeusdt",
-    //             "vvvusdt"
 
     long long ts = current_timestamp_ms();
     std::map<std::string, std::string> params = {
@@ -368,16 +370,12 @@ void MonitorTrades::market_order(const std::string& side,
 
     try {
         ws_->write(net::buffer(req.dump()));
-        // closing_trades_[symbol] = true;     // lock until confirmed
-        // active_trades_.erase(symbol);
-
         std::cout << "📤 Sent close order: "
                   << side << " " << symbol
                   << " qty=" << quantity
                   << " entry=" << entry_price
                   << " (locked for confirmation)\n";
-    }
-    catch (std::exception& e) {
+    } catch (std::exception& e) {
         std::cerr << "❌ Error sending close_trade: " << e.what() << std::endl;
     }
 }

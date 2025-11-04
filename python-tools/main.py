@@ -362,10 +362,48 @@ def calculate_summary(trades, initial_balance, final_balance):
     }
 
 
+
+# ===== FETCH ALL BINANCE FUTURES SYMBOLS =====
+def get_all_tradable_symbols():
+    url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    try:
+        res = requests.get(url, timeout=10)
+        data = res.json()
+        symbols = [
+            s["symbol"]
+            for s in data["symbols"]
+            if s["status"] == "TRADING"
+               and s["contractType"] == "PERPETUAL"
+               and s["quoteAsset"] == "USDT"
+        ]
+        print(f"✅ Found {len(symbols)} tradable USDT futures symbols.")
+        return symbols
+    except Exception as e:
+        print("❌ Error fetching symbols:", e)
+        return []
+
+# ===== MAIN =====
 # ===== MAIN =====
 if __name__ == "__main__":
-    symbols = [ "AIAUSDT", "COAIUSDT", "VVVUSDT", "4USDT"]
+    # 🔍 Auto-fetch all tradable USDT perpetual futures
+    symbols = get_all_tradable_symbols()
+
+    print(f"\n🚀 Starting backtest for {len(symbols)} symbols...")
     results = backtest_symbols(symbols)
+
     print("\n📊 Summary Table:")
     print(results)
-    results.to_csv("virtuum_backtest_results.csv", index=False)
+
+    # 💾 Save full results
+    # results.to_csv("virtuum_backtest_results.csv", index=False)
+
+    # 🔎 Filter profitable coins (net PnL > 0)
+    profitable = results[results["total_pnl"] > 0].copy()
+    profitable = profitable.sort_values(by="total_pnl", ascending=False)
+
+    # 💾 Save only profitable coins
+    profitable.to_csv("profitable_symbols.csv", index=False)
+
+    print(f"\n💰 Found {len(profitable)} profitable coins!")
+    print(profitable[["symbol", "total_pnl", "net_roi", "win_rate"]])
+    print("💾 Saved profitable_symbols.csv")
