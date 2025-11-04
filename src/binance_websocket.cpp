@@ -13,6 +13,7 @@
 #include "file_monitoring.hpp"
 #include <fstream>
 #include <zmq.hpp>
+#include "system_logger.hpp"
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
@@ -23,6 +24,7 @@ using json = nlohmann::json;
 using tcp = boost::asio::ip::tcp;
 using ssl_stream = boost::asio::ssl::stream<tcp::socket>;
 using websocket_t = boost::beast::websocket::stream<ssl_stream>;
+
 
 std::string env_path = ".env";
 EnvData env = load_config(env_path);
@@ -195,6 +197,11 @@ void MonitorTrades::start_markprice_read() {
                                       << " entry=" << trade.entry
                                       << " tp=" << trade.tp
                                       << " sl=" << trade.sl << std::endl;
+
+                            std::ostringstream oss;
+                            oss << reason << "for " << symbol << " mark=" << mark_price << " entry="
+                            << trade.entry << " tp=" << trade.tp << " sl=" << trade.sl << std::endl;
+                            Logger::info(oss.str());
 
                             closing_trades_[symbol] = true;
 

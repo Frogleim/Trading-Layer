@@ -14,6 +14,7 @@ add_executable(Trading_Layer
         src/binance_websocket.cpp
         src/file_monitoring.cpp
         src/tools.cpp
+        src/system_logger.cpp
 
 
 )
@@ -39,5 +40,5 @@ target_link_libraries(Trading_Layer PRIVATE
         OpenSSL::SSL
         OpenSSL::Crypto
         zmq
-        uuid
+#        uuid
 )
