@@ -327,14 +327,14 @@ void MonitorTrades::market_order(const std::string& side,
 
     // === replace the if/else chain ===
     static const std::unordered_map<std::string, double> quantity_map = {
-        {"1000satsusdt", 35000000},
-        {"jellyjellyusdt", 36},
-        {"gtcusdt", 1200},
-        {"flmusdt", 10000},
-        {"labusdt", 250},
-        {"coaiusdt", 2100},
-        {"evaausdt", 300},
-        {"pippinusdt", 300},
+        // {"1000satsusdt", 35000000},
+        // {"jellyjellyusdt", 36},
+        // {"gtcusdt", 1200},
+        // {"flmusdt", 10000},
+        // {"labusdt", 250},
+        {"coaiusdt", 6},
+        // {"evaausdt", 300},
+        // {"pippinusdt", 300},
 
 
     };

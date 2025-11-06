@@ -12,9 +12,9 @@ TP_PCT = 0.004
 SL_PCT = 0.002
 FEE = 0.0005
 LEVERAGE = 50
-MARGIN_PER_TRADE = 10.5
+MARGIN_PER_TRADE = 1.5
 COOLDOWN_CANDLES = 1
-LIMIT = 2000  # max klines per request
+LIMIT = 4000  # max klines per request
 INTERVAL = "3m"  # timeframe
 
 
@@ -31,7 +31,7 @@ def compute_obi(df):
 
 
 # ===== FETCH DATA =====
-def fetch_klines_full_month(symbol: str, interval="5m", days=10):
+def fetch_klines_full_month(symbol: str, interval="5m", days=30):
     url = "https://fapi.binance.com/fapi/v1/klines"
     end_time = int(time.time() * 1000)  # current timestamp in ms
     start_time = end_time - days * 24 * 60 * 60 * 1000
@@ -71,7 +71,7 @@ def fetch_klines_full_month(symbol: str, interval="5m", days=10):
 
 
 # ===== STRATEGY =====
-def backtest_strategy_improved(df, initial_balance=893.0):
+def backtest_strategy_improved(df, initial_balance=50.0):
     df = df.copy()
 
     # Data validation
@@ -239,7 +239,7 @@ def backtest_symbols(symbols):
     all_summaries = []
     for sym in symbols:
         print(f"📡 Fetching {sym} ...")
-        df = fetch_klines_full_month(sym, INTERVAL, days=5)  # ✅ fixed param
+        df = fetch_klines_full_month(sym, INTERVAL, days=30)  # ✅ fixed param
         print(f"Fetched {len(df)} candles for {sym}")
         if df is None or df.empty:
             continue
@@ -386,7 +386,13 @@ def get_all_tradable_symbols():
 # ===== MAIN =====
 if __name__ == "__main__":
     # 🔍 Auto-fetch all tradable USDT perpetual futures
-    symbols = get_all_tradable_symbols()
+    symbols = ['1000SATSUSDT', 'JELLYJELLYUSDT', 'GTCUSDT', 'FLMUSDT', 'LABUSDT', 'COAIUSDT',
+               'EVAAUSDT', 'PIPPINUSDT', 'CELOUSDT', 'ICNTUSDT', 'KITEUSDT', 'ZKJUSDT', 'UBUSDT',
+               '币安人生USDTHIPPOUSDT', '1000WHYUSDT', 'ATUSDT', 'PORT3USDT', 'DASHUSDT', 'CARVUSDT',
+               'COMMONUSDT', 'SAFEUSDT', 'ALTUSDT', 'ZKUSDT', 'AIAUSDT', 'ARCUSDT', 'TURTLEUSDT',
+               '4USDT', 'SXPUSDT', 'OLUSDT', 'ZENUSDT', 'AI16ZUSDT', 'STGUSDT', 'MINAUSDT',
+               'RECALLUSDT', 'ICPUSDT', 'KDAUSDT']
+
 
     print(f"\n🚀 Starting backtest for {len(symbols)} symbols...")
     results = backtest_symbols(symbols)
