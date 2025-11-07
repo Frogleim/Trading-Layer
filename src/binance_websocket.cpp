@@ -42,7 +42,7 @@ const std::string MonitorTrades::TARGET = "/ws-fapi/v1";  // private WebSocket e
 
 const double TP = env.TP;
 const double SL = env.SL;
-
+constexpr double SL_BUFFER = 0.001;
 // ====== Global ASIO/Beast objects ======
 namespace {
     net::io_context ioc;
@@ -50,15 +50,20 @@ namespace {
 }
 
 // ====== Utility ======
-std::pair<double, double> calculate_sl_tp(std::string side, double entry_price) {
+std::pair<double, double> calculate_sl_tp(const std::string& side, double entry_price) {
     double tp_price = 0.0, sl_price = 0.0;
+
     if (side == "LONG") {
         tp_price = entry_price * (1 + TP);
         sl_price = entry_price * (1 - SL);
-    } else if (side == "SHORT") {
+        sl_price *= (1.0 + SL_BUFFER);
+    }
+    else if (side == "SHORT") {
         tp_price = entry_price * (1 - TP);
         sl_price = entry_price * (1 + SL);
+        sl_price *= (1.0 - SL_BUFFER);
     }
+
     return {tp_price, sl_price};
 }
 
@@ -328,11 +333,11 @@ void MonitorTrades::market_order(const std::string& side,
     // === replace the if/else chain ===
     static const std::unordered_map<std::string, double> quantity_map = {
         // {"1000satsusdt", 35000000},
-        // {"jellyjellyusdt", 36},
+        // {"jellyjellyusdt", 50},
         // {"gtcusdt", 1200},
         // {"flmusdt", 10000},
         // {"labusdt", 250},
-        {"coaiusdt", 6},
+        {"coaiusdt", 60},
         // {"evaausdt", 300},
         // {"pippinusdt", 300},
 
