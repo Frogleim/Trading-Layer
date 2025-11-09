@@ -50,17 +50,21 @@ namespace {
 }
 
 // ====== Utility ======
-std::pair<double, double> calculate_sl_tp(const std::string& side, double entry_price) {
+std::pair<double, double> calculate_sl_tp(const std::string& side, double entry_price, double mark_price) {
     double tp_price = 0.0, sl_price = 0.0;
+
+    constexpr double SL_BUFFER = 0.001; // 0.1% safety margin
 
     if (side == "LONG") {
         tp_price = entry_price * (1 + TP);
-        sl_price = entry_price * (1 - SL);
+        // use mark drift compensation: if mark is already below entry, shift SL slightly lower
+        double drift = (entry_price - mark_price) / entry_price;
+        sl_price = entry_price * (1 - SL - drift);
         sl_price *= (1.0 + SL_BUFFER);
-    }
-    else if (side == "SHORT") {
+    } else if (side == "SHORT") {
         tp_price = entry_price * (1 - TP);
-        sl_price = entry_price * (1 + SL);
+        double drift = (mark_price - entry_price) / entry_price;
+        sl_price = entry_price * (1 + SL + drift);
         sl_price *= (1.0 - SL_BUFFER);
     }
 
@@ -119,9 +123,9 @@ void MonitorTrades::connect(){
             "1000satsusdt",
             "jellyjellyusdt",
                     "gtcusdt",
-                    "flmusdt",
-                    "labusdt",
                     "coaiusdt",
+                    "labusdt",
+                    "arusdt",
                     "evaausdt",
                     "pippinusdt"
             };
@@ -337,7 +341,7 @@ void MonitorTrades::market_order(const std::string& side,
         // {"gtcusdt", 1200},
         // {"flmusdt", 10000},
         // {"labusdt", 250},
-        {"coaiusdt", 60},
+        {"coaiusdt", 120},
         // {"evaausdt", 300},
         // {"pippinusdt", 300},
 
@@ -459,7 +463,7 @@ void MonitorTrades::start_async_read() {
                         t.side   = posAmt > 0 ? "LONG" : "SHORT";
                         t.entry  = entry;
                         t.amount = std::abs(posAmt);
-                        auto [tp, sl] = calculate_sl_tp(t.side, entry);
+                        auto [tp, sl] = calculate_sl_tp(t.side, entry, markPrice);
                         t.tp = tp;
                         t.sl = sl;
                         active_trades_[symbol] = t;

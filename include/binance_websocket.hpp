@@ -123,6 +123,8 @@ private:
     bool connected_ = false;
     std::unordered_map<std::string, bool> closing_trades_;
     std::unordered_map<std::string, ActiveTrade> active_trades_;
+    std::unordered_map<std::string, double> latest_mark_prices_;
+
     // --- Helpers ---
     ZMQComm zmq;
 };
