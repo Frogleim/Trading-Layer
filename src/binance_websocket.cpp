@@ -57,15 +57,11 @@ std::pair<double, double> calculate_sl_tp(const std::string& side, double entry_
 
     if (side == "LONG") {
         tp_price = entry_price * (1 + TP);
-        // use mark drift compensation: if mark is already below entry, shift SL slightly lower
-        double drift = (entry_price - mark_price) / entry_price;
-        sl_price = entry_price * (1 - SL - drift);
-        sl_price *= (1.0 + SL_BUFFER);
+        sl_price = entry_price * (1 - SL);
+
     } else if (side == "SHORT") {
         tp_price = entry_price * (1 - TP);
-        double drift = (mark_price - entry_price) / entry_price;
-        sl_price = entry_price * (1 + SL + drift);
-        sl_price *= (1.0 - SL_BUFFER);
+        sl_price = entry_price * (1 + SL);
     }
 
     return {tp_price, sl_price};
