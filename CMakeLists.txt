@@ -15,6 +15,7 @@ add_executable(Trading_Layer
         src/file_monitoring.cpp
         src/tools.cpp
         src/system_logger.cpp
+        src/logger.cpp
 
 
 )
