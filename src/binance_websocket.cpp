@@ -14,6 +14,7 @@
 #include <fstream>
 #include <zmq.hpp>
 #include "system_logger.hpp"
+#include "logger.hpp"
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
@@ -157,10 +158,15 @@ void MonitorTrades::connect(){
 void MonitorTrades::start_markprice_read() {
     auto mark_buffer = std::make_shared<beast::flat_buffer>();
 
+
     ws_mark_->async_read(*mark_buffer,
         [this, mark_buffer](beast::error_code ec, std::size_t bytes_transferred) {
             if (ec) {
+                _mark_price_logger.str("");
+                _mark_price_logger.clear();
+                _mark_price_logger << "❌ MarkPrice read error: " + ec.message();
                 std::cerr << "❌ MarkPrice read error: " << ec.message() << std::endl;
+                Logger::error(_mark_price_logger.str());
                 return;
             }
 
@@ -219,14 +225,26 @@ void MonitorTrades::start_markprice_read() {
                                 market_order(close_side, symbol, trade.amount, trade.entry);
                             });
                             active_trades_.erase(symbol);
-                            send_confirmation(symbol);
 
+                            send_confirmation(symbol);
+                            double pnl = 0.0;
+                            if (trade.side == "LONG")
+                                pnl = (mark_price - trade.entry) / trade.entry * 100.0;
+                            else
+                                pnl = (trade.entry - mark_price) / trade.entry * 100.0;
+                            long latency_us = 0;
+                            append_trade_to_csv(symbol, trade.side, trade.entry, trade.tp, trade.sl,
+                                                mark_price, reason, pnl, latency_us);
                         }
                     }
                 }
 
             } catch (const std::exception& e) {
                 std::cerr << "❌ MarkPrice parse error: " << e.what() << std::endl;
+                _mark_price_logger.str("");
+                _mark_price_logger.clear();
+                _mark_price_logger << "❌ MarkPrice parse error: " << e.what();
+                Logger::error(_mark_price_logger.str());
             }
 
             // Continue reading recursively
@@ -332,14 +350,14 @@ void MonitorTrades::market_order(const std::string& side,
 
     // === replace the if/else chain ===
     static const std::unordered_map<std::string, double> quantity_map = {
-        // {"1000satsusdt", 35000000},
-        // {"jellyjellyusdt", 50},
-        // {"gtcusdt", 1200},
-        // {"flmusdt", 10000},
-        // {"labusdt", 250},
+        {"1000satsusdt", 35000000},
+        {"jellyjellyusdt", 50},
+        {"gtcusdt", 1200},
+        {"flmusdt", 10000},
+        {"labusdt", 250},
         {"coaiusdt", 120},
-        // {"evaausdt", 300},
-        // {"pippinusdt", 300},
+        {"evaausdt", 300},
+        {"pippinusdt", 300},
 
 
     };

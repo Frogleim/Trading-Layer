@@ -35,6 +35,8 @@ struct PositionInfo {
     int open_trades = 0;
 };
 
+
+
 struct ActiveTrade {
     std::string side;   // "LONG" or "SHORT"
     double entry = 0.0;
@@ -92,6 +94,7 @@ private:
     zmq::socket_t zmq_pub_;
     std::thread zmq_thread_;
     std::mutex zmq_mutex_;
+    std::ostringstream _mark_price_logger;
     // --- Independent I/O contexts ---
     net::io_context io_private_;
     net::io_context io_mark_;

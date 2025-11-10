@@ -15,6 +15,42 @@ std::string timestamp_now() {
     return ts;
 }
 
+
+void append_trade_to_csv(const std::string& symbol,
+                         const std::string& side,
+                         double entry,
+                         double tp,
+                         double sl,
+                         double close_price,
+                         const std::string& reason,
+                         double pnl,
+                         long latency_us)
+{
+    namespace fs = std::filesystem;
+    const std::string filename = "trades_log.csv";
+    bool file_exists = fs::exists(filename);
+
+    std::ofstream file(filename, std::ios::app);
+    if (!file.is_open()) {
+        std::cerr << "❌ Failed to open " << filename << " for writing.\n";
+        return;
+    }
+
+    if (!file_exists) {
+        file << "timestamp,symbol,side,entry,tp,sl,close_price,reason,pnl,latency_us\n";
+    }
+
+    auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    file << std::put_time(std::gmtime(&now), "%Y-%m-%d %H:%M:%S") << ","
+         << symbol << "," << side << ","
+         << entry << "," << tp << "," << sl << ","
+         << close_price << "," << reason << ","
+         << pnl << "," << latency_us
+         << "\n";
+
+    file.close();
+}
+
 void log_trade_csv(const ActiveTrade& trade,
                    const std::string& symbol,
                    const std::string& action,
