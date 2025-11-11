@@ -13,11 +13,8 @@
 #include "file_monitoring.hpp"
 #include <fstream>
 #include <zmq.hpp>
-#include <deque>
 #include "system_logger.hpp"
 #include "logger.hpp"
-#include <numeric>   // for std::accumulate
-#include <cmath>     // for std::log, std::sqrt
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
@@ -53,115 +50,31 @@ namespace {
     ssl::context ctx(ssl::context::tlsv12_client);
 }
 
-
-struct VolatilityTracker {
-    std::deque<double> prices;
-    size_t max_window = 20; // 20 recent marks (~20 seconds if @1s updates)
-
-    void add(double price) {
-        if (prices.size() >= max_window)
-            prices.pop_front();
-        prices.push_back(price);
-    }
-
-    double get_volatility() const {
-        if (prices.size() < 2) return 0.0;
-        std::vector<double> returns;
-        returns.reserve(prices.size() - 1);
-        for (size_t i = 1; i < prices.size(); ++i) {
-            double r = std::log(prices[i] / prices[i - 1]);
-            returns.push_back(r);
-        }
-        double mean = std::accumulate(returns.begin(), returns.end(), 0.0) / returns.size();
-        double var = 0.0;
-        for (double r : returns)
-            var += (r - mean) * (r - mean);
-        var /= returns.size();
-        return std::sqrt(var);
-    }
-};
-
-
-
-std::string format_price(double price, const std::string& symbol) {
-    // Find tick size for this symbol
-    double tick = 0.0001;  // default
-    if (auto it = TICK_SIZE_MAP.find(symbol); it != TICK_SIZE_MAP.end())
-        tick = it->second;
-
-    // Round price to nearest tick
-    double rounded = std::round(price / tick) * tick;
-
-    // Determine decimal places based on tick size
-    int decimals = 0;
-    double tmp = tick;
-    while (tmp < 1.0) {
-        tmp *= 10.0;
-        decimals++;
-    }
-
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(decimals) << rounded;
-    return oss.str();
-}
-
-std::unordered_map<std::string, VolatilityTracker> vola_map;
-std::unordered_map<std::string, OrderBookInfo> orderbook_;
-std::unordered_map<std::string, OrderBookLogs> order_book_logger_;
-
-
 // ====== Utility ======
-std::pair<double, double> calculate_sl_tp(const std::string& side,
-                                          double entry_price,
-                                          double mark_price,
-                                          const std::string& symbol)
-{
-    // === constants ===
-    const double min_pct = 0.001;  // 0.1%
-    const double max_pct = 0.01;   // 1.0%
-    const double k_tp = 2.0;       // TP multiplier
-    const double k_sl = 1.0;       // SL multiplier
+std::pair<double, double> calculate_sl_tp(const std::string& side, double entry_price, std::string symbol) {
+    double tp_price = 0.0, sl_price = 0.0;
 
-    // --- get recent volatility ---
-    double vol = 0.001;
-    if (auto it = vola_map.find(symbol); it != vola_map.end())
-        vol = it->second.get_volatility();
+    constexpr double SL_BUFFER = 0.001; // 0.1% safety margin
+    if (symbol == "jellyjellyusdt") {
+        if (side == "LONG") {
+            tp_price = entry_price * (1 + 0.01);
+            sl_price = entry_price * (1 - 0.005);
+        } else if (side == "SHORT") {
+            tp_price = entry_price * (1 - 0.01);
+            sl_price = entry_price * (1 + 0.005);
+        }
 
-    // convert to percentage form
-    double vol_pct = std::clamp(vol * 100.0, min_pct, max_pct);
+    }else {
+        if (side == "LONG") {
+            tp_price = entry_price * (1 + TP);
+            sl_price = entry_price * (1 - SL);
 
-    // compute base TP/SL in % of entry
-    double tp_pct = std::clamp(k_tp * vol_pct, min_pct, max_pct);
-    double sl_pct = std::clamp(k_sl * vol_pct, min_pct / 2, max_pct / 2);
-
-    // add liquidity factor if order book data available
-    double spread_factor = 1.0;
-    if (orderbook_.count(symbol)) {
-        double bid = orderbook_[symbol].best_bid;
-        double ask = orderbook_[symbol].best_ask;
-        double spread = (ask - bid) / ((ask + bid) / 2.0);
-        spread_factor = std::clamp(1.0 - spread * 100.0, 0.8, 1.2);
+        } else if (side == "SHORT") {
+            tp_price = entry_price * (1 - TP);
+            sl_price = entry_price * (1 + SL);
+        }
     }
 
-    tp_pct *= spread_factor;
-    sl_pct *= spread_factor;
-
-    // --- compute actual prices ---
-    double tp_price = 0.0;
-    double sl_price = 0.0;
-    if (side == "LONG") {
-        tp_price = entry_price * (1.0 + tp_pct);
-        sl_price = entry_price * (1.0 - sl_pct);
-    } else if (side == "SHORT") {
-        tp_price = entry_price * (1.0 - tp_pct);
-        sl_price = entry_price * (1.0 + sl_pct);
-    }
-
-    // Optional debug log
-    std::cout << "⚙️ [" << symbol << "] vol=" << vol
-              << " tp%=" << tp_pct * 100
-              << "% sl%=" << sl_pct * 100
-              << "% spreadFactor=" << spread_factor << std::endl;
 
     return {tp_price, sl_price};
 }
@@ -227,7 +140,7 @@ void MonitorTrades::connect(){
 
         std::string combined="/stream?streams=";
         for(size_t i=0;i<symbols.size();++i){
-            combined+=symbols[i]+"@markPrice@1s/" + symbols[i] + "@depth10@100ms";
+            combined+=symbols[i]+"@markPrice@1s";
             if(i+1<symbols.size()) combined+="/";
         }
 
@@ -256,11 +169,15 @@ void MonitorTrades::connect(){
 void MonitorTrades::start_markprice_read() {
     auto mark_buffer = std::make_shared<beast::flat_buffer>();
 
+
     ws_mark_->async_read(*mark_buffer,
         [this, mark_buffer](beast::error_code ec, std::size_t bytes_transferred) {
             if (ec) {
+                _mark_price_logger.str("");
+                _mark_price_logger.clear();
+                _mark_price_logger << "❌ MarkPrice read error: " + ec.message();
                 std::cerr << "❌ MarkPrice read error: " << ec.message() << std::endl;
-                start_markprice_read();
+                Logger::error(_mark_price_logger.str());
                 return;
             }
 
@@ -270,99 +187,106 @@ void MonitorTrades::start_markprice_read() {
             try {
                 auto j = nlohmann::json::parse(msg);
 
-                // Binance combined stream format: { "stream": "...", "data": {...} }
+                // ✅ Combined stream structure: { "stream": "...", "data": {...} }
                 if (j.contains("stream") && j.contains("data")) {
-                    std::string stream = j.value("stream", "");
                     const auto& d = j["data"];
                     std::string symbol = d.value("s", "");
-                    std::transform(symbol.begin(), symbol.end(), symbol.begin(), ::tolower);
-                    // === DEPTH STREAM ===
-                    if (stream.find("@depth") != std::string::npos) {
-                        if (d.contains("b") && d.contains("a")) {
-                            const auto& bids = d["b"];
-                            const auto& asks = d["a"];
-                            if (!bids.empty() && !asks.empty()) {
-                                double best_bid = std::stod(bids[0][0].get<std::string>());
-                                double best_ask = std::stod(asks[0][0].get<std::string>());
+                    double mark_price  = std::stod(d.value("p", "0"));
 
-                                orderbook_[symbol].best_bid = best_bid;
-                                orderbook_[symbol].best_ask = best_ask;
+                    if (symbol.empty()) return;
 
-                                double mid = (best_bid + best_ask) / 2.0;
-                                double spread_pct = mid > 0 ? ((best_ask - best_bid) / mid * 100.0) : 0.0;
+                    // 🧩 If we have an active trade for this symbol
+                    if (active_trades_.count(symbol)) {
+                        auto& trade = active_trades_.at(symbol);
 
-
-                            }
-                        }
-                    }
-
-                    // === MARK PRICE STREAM ===
-                    else if (stream.find("@markPrice") != std::string::npos) {
-                        double mark_price = std::stod(d.value("p", "0"));
-                        if (mark_price <= 0.0) {
-                            start_markprice_read();
+                        // Skip if already closing
+                        if (closing_trades_.count(symbol))
                             return;
+
+                        bool hit_tp = false;
+                        bool hit_sl = false;
+
+                        if (trade.side == "LONG") {
+                            hit_tp = mark_price >= trade.tp;
+                            hit_sl = mark_price <= trade.sl;
+                        } else if (trade.side == "SHORT") {
+                            hit_tp = mark_price <= trade.tp;
+                            hit_sl = mark_price >= trade.sl;
+                        }
+                        const auto now = std::chrono::steady_clock::now();
+                        const auto max_duration = std::chrono::minutes(3);
+
+                        if (now - trade.open_time >= max_duration) {
+                            std::string reason = "⏰ Max duration reached (3m)";
+                            std::cout << reason << " for " << symbol
+                                      << " mark=" << mark_price
+                                      << " entry=" << trade.entry
+                                      << " tp=" << trade.tp
+                                      << " sl=" << trade.sl << std::endl;
+
+                            closing_trades_[symbol] = true;
+
+                            net::post(io_private_, [this, symbol, trade]() {
+                                std::string close_side = (trade.side == "LONG") ? "SELL" : "BUY";
+                                market_order(close_side, symbol, trade.amount, trade.entry);
+                            });
+
+                            active_trades_.erase(symbol);
+                            send_confirmation(symbol);
+
+                            double pnl = (trade.side == "LONG")
+                                           ? (mark_price - trade.entry) / trade.entry * 100.0
+                                           : (trade.entry - mark_price) / trade.entry * 100.0;
+                            long latency_us = 0;
+                            append_trade_to_csv(symbol, trade.side, trade.entry, trade.tp, trade.sl,
+                                                mark_price, reason, pnl, latency_us);
                         }
 
-                        latest_mark_prices_[symbol] = mark_price;
-                        vola_map[symbol].add(mark_price);
+                        if (hit_tp || hit_sl) {
+                            std::string reason = hit_tp ? "🎯 TP hit" : "🛑 SL hit";
+                            std::cout << reason << " for " << symbol
+                                      << " mark=" << mark_price
+                                      << " entry=" << trade.entry
+                                      << " tp=" << trade.tp
+                                      << " sl=" << trade.sl << std::endl;
 
-                        // 🔹 TP/SL logic stays exactly as before
-                        if (active_trades_.count(symbol)) {
-                            auto& trade = active_trades_.at(symbol);
-                            if (closing_trades_.count(symbol))
-                                return;
+                            std::ostringstream oss;
+                            oss << reason << "for " << symbol << " mark=" << mark_price << " entry="
+                            << trade.entry << " tp=" << trade.tp << " sl=" << trade.sl << std::endl;
+                            Logger::info(oss.str());
 
-                            bool hit_tp = false;
-                            bool hit_sl = false;
+                            closing_trades_[symbol] = true;
 
-                            if (trade.side == "LONG") {
-                                hit_tp = mark_price >= trade.tp;
-                                hit_sl = mark_price <= trade.sl;
-                            } else if (trade.side == "SHORT") {
-                                hit_tp = mark_price <= trade.tp;
-                                hit_sl = mark_price >= trade.sl;
-                            }
+                            // ✅ Execute close order safely inside the private io_context
+                            net::post(io_private_, [this, symbol, trade]() {
+                                std::string close_side =
+                                    (trade.side == "LONG") ? "SELL" : "BUY";
+                                market_order(close_side, symbol, trade.amount, trade.entry);
+                            });
+                            active_trades_.erase(symbol);
 
-                            if (hit_tp || hit_sl) {
-                                std::string reason = hit_tp ? "🎯 TP hit" : "🛑 SL hit";
-                                std::cout << reason << " for " << symbol
-                                          << " mark=" << mark_price
-                                          << " entry=" << trade.entry
-                                          << " tp=" << trade.tp
-                                          << " sl=" << trade.sl << std::endl;
-
-                                Logger::info(reason + " " + symbol);
-
-                                closing_trades_[symbol] = true;
-
-                                // ✅ Close via adaptive_order inside private io_context
-                                net::post(io_private_, [this, symbol, trade, mark_price]() {
-                                    std::string close_side =
-                                        (trade.side == "LONG") ? "SELL" : "BUY";
-                                    adaptive_order(close_side, symbol, trade.amount, mark_price);
-                                });
-                                active_trades_.erase(symbol);
-
-                                send_confirmation(symbol);
-                                double pnl = 0.0;
-                                if (trade.side == "LONG")
-                                    pnl = (mark_price - trade.entry) / trade.entry * 100.0;
-                                else
-                                    pnl = (trade.entry - mark_price) / trade.entry * 100.0;
-                                append_trade_to_csv(symbol, trade.side, trade.entry, trade.tp,
-                                                    trade.sl, mark_price, reason, pnl, 0);
-                            }
+                            send_confirmation(symbol);
+                            double pnl = 0.0;
+                            if (trade.side == "LONG")
+                                pnl = (mark_price - trade.entry) / trade.entry * 100.0;
+                            else
+                                pnl = (trade.entry - mark_price) / trade.entry * 100.0;
+                            long latency_us = 0;
+                            append_trade_to_csv(symbol, trade.side, trade.entry, trade.tp, trade.sl,
+                                                mark_price, reason, pnl, latency_us);
                         }
                     }
                 }
-            }
-            catch (const std::exception& e) {
-                std::cerr << "❌ Parse error: " << e.what()
-                          << "\nRaw: " << msg << std::endl;
+
+            } catch (const std::exception& e) {
+                std::cerr << "❌ MarkPrice parse error: " << e.what() << std::endl;
+                _mark_price_logger.str("");
+                _mark_price_logger.clear();
+                _mark_price_logger << "❌ MarkPrice parse error: " << e.what();
+                Logger::error(_mark_price_logger.str());
             }
 
-            // Continue reading
+            // Continue reading recursively
             start_markprice_read();
         });
 }
@@ -399,7 +323,7 @@ void MonitorTrades::start_zmq_listener(){
                         std::chrono::duration_cast<std::chrono::microseconds>(t_exec-t_recv).count();
                     std::cout<<"⏱️ Signal-to-order latency for "<<symbol<<" = "
                              <<latency_us<<" µs ("<<latency_us/1000.0<<" ms)\n";
-                    adaptive_order(side,symbol,amount,price);
+                    market_order(side,symbol,amount,price);
                 });
             }
         }catch(const std::exception& e){
@@ -470,7 +394,7 @@ void MonitorTrades::market_order(const std::string& side,
         {"gtcusdt", 1200},
         {"flmusdt", 10000},
         {"labusdt", 250},
-        {"coaiusdt", 200},
+        {"coaiusdt", 120},
         {"evaausdt", 300},
         {"pippinusdt", 300},
 
@@ -518,80 +442,6 @@ void MonitorTrades::market_order(const std::string& side,
     }
 }
 
-
-void MonitorTrades::adaptive_order(const std::string& side,
-                                   const std::string& symbol,
-                                   double quantity,
-                                   double mark_price)
-{
-    if (!connected_) {
-        std::cerr << "⚠️ Not connected, skipping order.\n";
-        return;
-    }
-
-    // === Order shading parameters ===
-    constexpr double tick_size = 0.0001;      // change per price tick (update per symbol)
-    constexpr double shade_ticks = 3;         // ±3 ticks
-    constexpr double spread_threshold = 0.001; // 0.1%
-
-    // --- Fetch best bid/ask (you can maintain from mark stream or REST) ---
-    double best_bid = orderbook_[symbol].best_bid;
-    double best_ask = orderbook_[symbol].best_ask;
-    double spread   = (best_ask - best_bid) / ((best_ask + best_bid) / 2.0);
-
-    // --- Decide limit price ---
-    if (side == "BUY") {
-        if (spread < spread_threshold)
-            mark_price = best_bid + shade_ticks * tick_size;
-        else
-            mark_price = best_ask;  // if spread wide, take market
-    } else {
-        if (spread < spread_threshold)
-            mark_price = best_ask - shade_ticks * tick_size;
-        else
-            mark_price = best_bid;
-    }
-
-    // --- Decide order type ---
-    std::string order_type = (spread < spread_threshold) ? "LIMIT" : "MARKET";
-    std::string time_in_force = "GTC";
-
-    long long ts = current_timestamp_ms();
-    std::map<std::string, std::string> params = {
-        {"apiKey", API_KEY},
-        {"symbol", symbol},
-        {"side", side},
-        {"type", order_type},
-        {"positionSide", "BOTH"},
-        {"quantity", std::to_string(quantity)},
-        {"timestamp", std::to_string(ts)}
-    };
-
-    if (order_type == "LIMIT") {
-        params["price"] = format_price(mark_price, symbol);
-        params["timeInForce"] = time_in_force;
-    }
-
-    params["signature"] = generate_signature(params, API_SECRET);
-
-    json req = {
-        {"id", generate_uuid()},
-        {"method", "order.place"},
-        {"params", params}
-    };
-
-    try {
-        ws_->write(net::buffer(req.dump()));
-        std::cout << "📤 Sent " << order_type << " " << side
-                  << " " << symbol
-                  << " qty=" << quantity
-                  << " @ " << mark_price
-                  << " (spread=" << spread*100 << "%)\n";
-    } catch (std::exception& e) {
-        std::cerr << "❌ Error sending shaded order: " << e.what() << std::endl;
-    }
-}
-
 // -------------------------
 void MonitorTrades::start_async_read() {
     ws_->async_read(
@@ -620,36 +470,6 @@ void MonitorTrades::start_async_read() {
 
             try {
                 auto j = nlohmann::json::parse(msg);
-                std::cout << j.dump() << std::endl;
-                if (j.contains("stream") && j.contains("data")) {
-                    std::string stream = j.value("steam", "");
-                    const auto& d = j["data"];
-                    std::string data = d.value("s", "");
-                    std::string symbol = d.value("s", "");
-
-                    if (stream.find("@markPrice") != std::string::npos) {
-                        double mark_price = d.value("markPrice", 0.0);
-                        latest_mark_prices_[symbol] = mark_price;
-                    }
-                    else if (stream.find("@depth5") != std::string::npos) {
-                        if (d.contains("bids") && d.contains("asks")) {
-                            double best_bid = std::stod(d["bids"][0][0].get<std::string>());
-                            double best_ask = std::stod(d["asks"][0][0].get<std::string>());
-                            orderbook_[symbol].best_bid = best_bid;
-                            orderbook_[symbol].best_ask = best_ask;
-                            std::cout << "[DEPTH] " << symbol
-                                 << " bid=" << best_bid
-                                 << " ask=" << best_ask
-                                 << " spread=" << (best_ask - best_bid)
-                                 << " mid=" << ((best_bid + best_ask) / 2.0)
-                                 << std::endl;
-                        }
-                    }
-
-                    start_async_read();
-                    return;
-
-                }
 
                 // 🧩 1️⃣ Handle order updates (status FILLED, CANCELED, etc.)
                 if (j.contains("result") && j["result"].is_object()) {
@@ -696,10 +516,11 @@ void MonitorTrades::start_async_read() {
                         t.side   = posAmt > 0 ? "LONG" : "SHORT";
                         t.entry  = entry;
                         t.amount = std::abs(posAmt);
-                        auto [tp, sl] = calculate_sl_tp(t.side, entry, markPrice, symbol);
+                        auto [tp, sl] = calculate_sl_tp(t.side, entry, symbol);
                         t.tp = tp;
                         t.sl = sl;
                         active_trades_[symbol] = t;
+                        t.open_time = std::chrono::steady_clock::now();
 
 
                         std::cout << "📊 Position Update: "

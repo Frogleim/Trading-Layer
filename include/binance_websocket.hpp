@@ -43,6 +43,8 @@ struct ActiveTrade {
     double amount = 0.0;
     double tp = 0.0;
     double sl = 0.0;
+    std::chrono::steady_clock::time_point open_time; // 🕒 new field
+
 };
 
 struct Positions {
