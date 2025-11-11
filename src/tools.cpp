@@ -33,7 +33,12 @@ std::string generate_uuid() {
     return std::string(uuid_str);
 }
 
-
+std::string to_upper_symbol(const std::string& symbol) {
+    std::string upper = symbol;
+    std::transform(upper.begin(), upper.end(), upper.begin(),
+                   [](unsigned char c) { return std::toupper(c); });
+    return upper;
+}
 
 std::string generate_signature(const std::map<std::string, std::string>& params,
                                const std::string& secret) {

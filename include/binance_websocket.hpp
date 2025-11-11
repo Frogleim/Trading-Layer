@@ -51,6 +51,28 @@ struct Positions {
     double quantity = 0.0;
 };
 
+struct OrderBookInfo {
+    double best_bid = 0.0;
+    double best_ask = 0.0;
+};
+
+
+struct OrderBookLogs {
+    double ask = 0.0;
+    double bid = 0.0;
+    double spread = 0.0;
+};
+
+static const std::unordered_map<std::string, double> TICK_SIZE_MAP = {
+    {"coaiusdt",    0.0001},
+    {"labusdt",     0.00001},
+    {"jellyjellyusdt", 0.0001},
+    {"arusdt",      0.0001},
+    {"evausdt",     0.0001},
+    {"pippinusdt",  0.0001},
+    {"1000satsusdt",0.000001}
+};
+
 // ================= MonitorTrades =================
 class MonitorTrades {
 public:
@@ -76,11 +98,16 @@ public:
     void start_async_read();
     void start_markprice_read();
     void start_zmq_listener();
-    void send_confirmation(std::string symbol);
+    void send_confirmation(const std::string& symbol);
     void market_order(const std::string& side,
                       const std::string& symbol,
                       double quantity,
                       double entry_price);
+
+    void adaptive_order(const std::string& side,
+                                   const std::string& symbol,
+                                   double quantity,
+                                   double mark_price);
     void run_event_loop();
 
     template<typename F>
