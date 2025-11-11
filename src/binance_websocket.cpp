@@ -15,6 +15,8 @@
 #include <zmq.hpp>
 #include "system_logger.hpp"
 #include "logger.hpp"
+#include <numeric>   // for std::accumulate
+#include <cmath>     // for std::log, std::sqrt
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
