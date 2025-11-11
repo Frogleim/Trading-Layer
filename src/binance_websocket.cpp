@@ -13,6 +13,7 @@
 #include "file_monitoring.hpp"
 #include <fstream>
 #include <zmq.hpp>
+#include <deque>
 #include "system_logger.hpp"
 #include "logger.hpp"
 #include <numeric>   // for std::accumulate
