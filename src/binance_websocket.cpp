@@ -11,7 +11,6 @@
 #include <map>
 #include <unordered_set>
 #include "file_monitoring.hpp"
-#include <fstream>
 #include <zmq.hpp>
 #include "system_logger.hpp"
 #include "logger.hpp"
@@ -26,7 +25,7 @@ using tcp = boost::asio::ip::tcp;
 using ssl_stream = boost::asio::ssl::stream<tcp::socket>;
 using websocket_t = boost::beast::websocket::stream<ssl_stream>;
 
-
+#include <iomanip>
 std::string env_path = ".env";
 EnvData env = load_config(env_path);
 
@@ -40,7 +39,6 @@ const std::string MonitorTrades::MARK_PRICE_HOST = env.market_data;
 
 const std::string MonitorTrades::PORT   = "443";
 const std::string MonitorTrades::TARGET = "/ws-fapi/v1";  // private WebSocket endpoint
-
 const double TP = env.TP;
 const double SL = env.SL;
 constexpr double SL_BUFFER = 0.001;
@@ -64,7 +62,7 @@ std::pair<double, double> calculate_sl_tp(const std::string& side, double entry_
             sl_price = entry_price * (1 + 0.005);
         }
 
-    }else {
+    } else {
         if (side == "LONG") {
             tp_price = entry_price * (1 + TP);
             sl_price = entry_price * (1 - SL);
@@ -92,6 +90,9 @@ MonitorTrades::MonitorTrades()
     ssl_ctx_.set_default_verify_paths();
     zmq_pub_.bind("tcp://localhost:5556");
     std::cout << "📡 ZMQ publisher bound on tcp://localhost:5556\n";
+    std::string is_demo = env.is_testnet ? "True" : "False";
+    tg_worker.push("📡 ZMQ publisher bound on tcp://localhost:5556\n");
+    tg_worker.push("Is Demo account: " + is_demo);
     // Start independent IO threads
     thread_private_ = std::thread([this](){ io_private_.run(); });
     thread_mark_    = std::thread([this](){ io_mark_.run(); });
@@ -130,13 +131,13 @@ void MonitorTrades::connect(){
         std::vector<std::string> symbols = {
             "1000satsusdt",
             "jellyjellyusdt",
-                    "gtcusdt",
-                    "coaiusdt",
-                    "labusdt",
-                    "arusdt",
-                    "evaausdt",
-                    "pippinusdt"
-            };
+            "gtcusdt",
+            "coaiusdt",
+            "labusdt",
+            "arusdt",
+            "evaausdt",
+            "pippinusdt"
+        };
 
         std::string combined="/stream?streams=";
         for(size_t i=0;i<symbols.size();++i){
@@ -157,6 +158,11 @@ void MonitorTrades::connect(){
         ws_mark_->handshake(MARK_PRICE_HOST, combined);
         std::cout<<"✅ Subscribed to combined markPrice stream:\n"
                  <<MARK_PRICE_HOST<<combined<<std::endl;
+        std::string msg =
+            "✅ Subscribed to combined markPrice stream:\n" +
+            MARK_PRICE_HOST + combined;
+
+        tg_worker.push(msg);
 
         start_markprice_read();
 
@@ -168,7 +174,6 @@ void MonitorTrades::connect(){
 
 void MonitorTrades::start_markprice_read() {
     auto mark_buffer = std::make_shared<beast::flat_buffer>();
-
 
     ws_mark_->async_read(*mark_buffer,
         [this, mark_buffer](beast::error_code ec, std::size_t bytes_transferred) {
@@ -185,6 +190,8 @@ void MonitorTrades::start_markprice_read() {
             mark_buffer->consume(mark_buffer->size());
 
             try {
+
+                double pnl = 0.0;
                 auto j = nlohmann::json::parse(msg);
 
                 // ✅ Combined stream structure: { "stream": "...", "data": {...} }
@@ -216,65 +223,7 @@ void MonitorTrades::start_markprice_read() {
                         const auto now = std::chrono::steady_clock::now();
                         const auto max_duration = std::chrono::minutes(3);
 
-                        if (now - trade.open_time >= max_duration) {
-                            std::string reason = "⏰ Max duration reached (3m)";
-                            std::cout << reason << " for " << symbol
-                                      << " mark=" << mark_price
-                                      << " entry=" << trade.entry
-                                      << " tp=" << trade.tp
-                                      << " sl=" << trade.sl << std::endl;
 
-                            closing_trades_[symbol] = true;
-
-                            net::post(io_private_, [this, symbol, trade]() {
-                                std::string close_side = (trade.side == "LONG") ? "SELL" : "BUY";
-                                market_order(close_side, symbol, trade.amount, trade.entry);
-                            });
-
-                            active_trades_.erase(symbol);
-                            send_confirmation(symbol);
-
-                            double pnl = (trade.side == "LONG")
-                                           ? (mark_price - trade.entry) / trade.entry * 100.0
-                                           : (trade.entry - mark_price) / trade.entry * 100.0;
-                            long latency_us = 0;
-                            append_trade_to_csv(symbol, trade.side, trade.entry, trade.tp, trade.sl,
-                                                mark_price, reason, pnl, latency_us);
-                        }
-
-                        if (hit_tp || hit_sl) {
-                            std::string reason = hit_tp ? "🎯 TP hit" : "🛑 SL hit";
-                            std::cout << reason << " for " << symbol
-                                      << " mark=" << mark_price
-                                      << " entry=" << trade.entry
-                                      << " tp=" << trade.tp
-                                      << " sl=" << trade.sl << std::endl;
-
-                            std::ostringstream oss;
-                            oss << reason << "for " << symbol << " mark=" << mark_price << " entry="
-                            << trade.entry << " tp=" << trade.tp << " sl=" << trade.sl << std::endl;
-                            Logger::info(oss.str());
-
-                            closing_trades_[symbol] = true;
-
-                            // ✅ Execute close order safely inside the private io_context
-                            net::post(io_private_, [this, symbol, trade]() {
-                                std::string close_side =
-                                    (trade.side == "LONG") ? "SELL" : "BUY";
-                                market_order(close_side, symbol, trade.amount, trade.entry);
-                            });
-                            active_trades_.erase(symbol);
-
-                            send_confirmation(symbol);
-                            double pnl = 0.0;
-                            if (trade.side == "LONG")
-                                pnl = (mark_price - trade.entry) / trade.entry * 100.0;
-                            else
-                                pnl = (trade.entry - mark_price) / trade.entry * 100.0;
-                            long latency_us = 0;
-                            append_trade_to_csv(symbol, trade.side, trade.entry, trade.tp, trade.sl,
-                                                mark_price, reason, pnl, latency_us);
-                        }
                     }
                 }
 
@@ -315,15 +264,21 @@ void MonitorTrades::start_zmq_listener(){
 
                 double amount=5.0;
                 double price=0.0;
+
                 std::string side=(direction=="LONG")?"BUY":"SELL";
 
                 net::post(io_private_,[this,side,symbol,amount,price,t_recv](){
                     auto t_exec=std::chrono::high_resolution_clock::now();
                     auto latency_us=
                         std::chrono::duration_cast<std::chrono::microseconds>(t_exec-t_recv).count();
-                    std::cout<<"⏱️ Signal-to-order latency for "<<symbol<<" = "
-                             <<latency_us<<" µs ("<<latency_us/1000.0<<" ms)\n";
+                                        std::string msg =
+                        "⏱️ Signal-to-order latency for " + symbol +
+                        " = " + std::to_string(latency_us) +
+                        " µs (" + std::to_string(latency_us / 1000.0) +
+                        " ms)";
+                    tg_worker.push(msg);
                     market_order(side,symbol,amount,price);
+                    // algo_orders(side,symbol,amount,price);
                 });
             }
         }catch(const std::exception& e){
@@ -338,6 +293,7 @@ void MonitorTrades::send_confirmation(const std::string& symbol) {
     try {
         std::lock_guard<std::mutex> lock(zmq_mutex_);
         std::string message = "CLOSED " + symbol;
+        tg_worker.push(message);
         zmq_pub_.send(zmq::buffer(message), zmq::send_flags::none);
         std::cout << "✅ Sent trade confirmation: " << message << std::endl;
     } catch (const std::exception& e) {
@@ -369,11 +325,131 @@ void MonitorTrades::query_position() {
 
         try {
             ws_->write(net::buffer(req.dump()));
-            std::cout << "📤 Requested account positions...\n";
         } catch (const std::exception& e) {
             std::cerr << "❌ query_position error: " << e.what() << std::endl;
         }
     });
+}
+
+
+void MonitorTrades::algo_SL_orders(const std::string &side, const std::string &symbol, double quantity, double entry_price) {
+    if (!connected_) {
+        std::cerr << "⚠️ Not connected, skipping close order.\n";
+        return;
+    }
+    std::string pos_side;
+    static const std::unordered_map<std::string, double> quantity_map = {
+        {"1000satsusdt", 35000000},
+        {"jellyjellyusdt", 7000},
+        {"gtcusdt", 1200},
+        {"flmusdt", 10000},
+        {"labusdt", 250},
+        {"coaiusdt", 120},
+        {"evaausdt", 300},
+        {"pippinusdt", 300},
+
+
+    };
+
+    if (side == "LONG") {
+        pos_side = "SELL";
+    } else if (side == "SHORT") {
+        pos_side = "BUY";
+    }
+    logger.info("Algo order params: \nSymbol: " + symbol + "\nSide: " + side + "\nQuantity: " +
+        std::to_string(quantity) + "\nEntry Price: " + std::to_string(entry_price));
+    auto [tp, sl] = calculate_sl_tp(side, entry_price, symbol);
+
+    long long ts = current_timestamp_ms();
+    std::map<std::string, std::string> params = {
+        {"algoType", "CONDITIONAL"},
+        {"apiKey", API_KEY},
+        {"symbol", symbol},
+        {"side", pos_side},
+        {"positionSide", "BOTH"},
+        {"closePosition", "true"},
+        {"type", "STOP_MARKET"},
+        {"triggerPrice", std::to_string(sl)},   // ← REQUIRED!!!
+        {"timestamp", std::to_string(ts)}
+    };
+    params["signature"] = generate_signature(params, API_SECRET);
+    json req = {
+        {"id", generate_uuid()},
+        {"method", "algoOrder.place"},
+        {"params", params}
+    };
+    try {
+        ws_->write(net::buffer(req.dump()));
+        std::cout << "📤 Sent Algo order: "
+                  << side << " " << symbol
+                  << " qty=" << quantity
+                  << " entry=" << entry_price
+                  << " (locked for confirmation)\n";
+    } catch (std::exception& e) {
+        std::cerr << "❌ Error sending close_trade: " << e.what() << std::endl;
+    }
+
+}
+
+
+
+void MonitorTrades::algo_TP_orders(const std::string &side, const std::string &symbol, double quantity, double entry_price) {
+    if (!connected_) {
+        std::cerr << "⚠️ Not connected, skipping close order.\n";
+        return;
+    }
+    std::string pos_side;
+    static const std::unordered_map<std::string, double> quantity_map = {
+        {"1000satsusdt", 35000000},
+        {"jellyjellyusdt", 7000},
+        {"gtcusdt", 1200},
+        {"flmusdt", 10000},
+        {"labusdt", 250},
+        {"coaiusdt", 120},
+        {"evaausdt", 300},
+        {"pippinusdt", 300},
+
+
+    };
+
+    if (side == "LONG") {
+        pos_side = "SELL";
+    } else if (side == "SHORT") {
+        pos_side = "BUY";
+    }
+    logger.info("Algo order params: \nSymbol: " + symbol + "\nSide: " + side + "\nQuantity: " +
+        std::to_string(quantity) + "\nEntry Price: " + std::to_string(entry_price));
+    auto [tp, sl] = calculate_sl_tp(side, entry_price, symbol);
+
+    long long ts = current_timestamp_ms();
+    std::map<std::string, std::string> params = {
+        {"algoType", "CONDITIONAL"},
+        {"apiKey", API_KEY},
+        {"symbol", symbol},
+        {"side", pos_side},
+        {"positionSide", "BOTH"},
+        {"closePosition", "true"},
+        {"type", "TAKE_PROFIT_MARKET"},
+        {"triggerPrice", std::to_string(tp)},   // ← REQUIRED!!!
+        {"timestamp", std::to_string(ts)}
+    };
+    params["signature"] = generate_signature(params, API_SECRET);
+    json req = {
+        {"id", generate_uuid()},
+        {"method", "algoOrder.place"},
+        {"params", params}
+    };
+    try {
+        ws_->write(net::buffer(req.dump()));
+        std::cout << "📤 Sent Algo order: "
+                  << side << " " << symbol
+                  << " qty=" << quantity
+                  << " entry=" << entry_price
+                  << " (locked for confirmation)\n";
+    } catch (std::exception& e) {
+        std::cerr << "❌ Error sending close_trade: " << e.what() << std::endl;
+    }
+
 }
 
 // -------------------------
@@ -432,11 +508,14 @@ void MonitorTrades::market_order(const std::string& side,
 
     try {
         ws_->write(net::buffer(req.dump()));
-        std::cout << "📤 Sent close order: "
+        std::cout << "📤 Sent  order: "
                   << side << " " << symbol
                   << " qty=" << quantity
                   << " entry=" << entry_price
                   << " (locked for confirmation)\n";
+
+
+
     } catch (std::exception& e) {
         std::cerr << "❌ Error sending close_trade: " << e.what() << std::endl;
     }
@@ -486,7 +565,6 @@ void MonitorTrades::start_async_read() {
                 // 🧩 2️⃣ Handle position snapshots
                 if (j.contains("result") && j["result"].is_array()) {
                     std::unordered_set<std::string> snapshot_symbols;
-
                     for (const auto& pos : j["result"]) {
                         std::string symbol   = pos.value("symbol", "");
                         double entry         = std::stod(pos.value("entryPrice", "0"));
@@ -494,17 +572,62 @@ void MonitorTrades::start_async_read() {
                         double markPrice     = std::stod(pos.value("markPrice", "0"));
 
                         if (symbol.empty()) continue;
-                        snapshot_symbols.insert(symbol);
+                        auto it = active_trades_.find(symbol);
+                        if (it != active_trades_.end()) {
 
-                        // --- A. Handle closed positions (amt = 0) ---
-                        if (posAmt == 0) {
-                            std::cout << "✅ " << symbol << " confirmed closed (positionAmt=0)\n";
-                            closing_trades_.erase(symbol);
-                            active_trades_.erase(symbol);
-                            continue;
+                            ActiveTrade &t = it->second;
+
+                            if (posAmt == 0) {
+                                double entry = t.entry;
+                                double exit = markPrice;
+                                double pnl = 0.0;
+
+
+                                if (t.side == "LONG") {
+                                    pnl = (exit - entry) / entry * 100.0;
+                                } else {
+                                    pnl = (entry - exit) / entry * 100.0;
+                                }
+                                std::string reason = (exit >= t.tp) ? "🎯 TP HIT" : "🛑 SL HIT";
+                                std::string msg =
+                                    reason + " " + symbol +
+                                    "\nEntry: " + std::to_string(entry) +
+                                    "\nExit: " + std::to_string(exit) +
+                                    "\nTP: " + std::to_string(t.tp) +
+                                    "\nSL: " + std::to_string(t.sl) +
+                                    "\nPnL: " + std::to_string(pnl) + "%" +
+                                    "\nWallet: " + std::to_string(WALLET + pnl);
+
+                                tg_worker.push(msg);
+                                Logger::info(msg);
+
+                                WALLET += pnl;
+
+                                // Remove from active and closing lists
+                                active_trades_.erase(it);
+                                closing_trades_.erase(symbol);
+
+                                std::cout << "📌 Closed via conditional order: " << symbol
+                                          << " PnL=" << pnl << "%" << std::endl;
+
+                                continue;  // skip further logic
+                            }
                         }
 
-                        // --- B. Skip while waiting confirmation ---
+                        snapshot_symbols.insert(symbol);
+                        std::string side = posAmt > 0 ? "LONG" : "SHORT";
+
+                        algo_TP_orders(side, symbol, std::abs(posAmt), entry);
+                        algo_SL_orders(side, symbol, std::abs(posAmt), entry);
+
+                        // if (posAmt == 0) {
+                        //     std::cout << "✅ " << symbol << " confirmed closed (positionAmt=0)\n";
+                        //     closing_trades_.erase(symbol);
+                        //     active_trades_.erase(symbol);
+                        //     continue;
+                        // }
+
+
                         if (closing_trades_.count(symbol)) {
                             std::cout << "⏳ Waiting for close confirmation: " << symbol << std::endl;
                             continue;
@@ -519,8 +642,8 @@ void MonitorTrades::start_async_read() {
                         auto [tp, sl] = calculate_sl_tp(t.side, entry, symbol);
                         t.tp = tp;
                         t.sl = sl;
+                        t.open_time = std::chrono::steady_clock::now();  // ✅ set first
                         active_trades_[symbol] = t;
-                        t.open_time = std::chrono::steady_clock::now();
 
 
                         std::cout << "📊 Position Update: "
@@ -542,49 +665,7 @@ void MonitorTrades::start_async_read() {
                         }
                     }
 
-                    // --- F. Display active trades summary ---
-                    // --- F. Display active trades summary ---
-                    static size_t last_lines = 0;
-                    {
-                        std::lock_guard<std::mutex> lock(log_mutex);
 
-                        std::ostringstream oss;
-                        oss << "────────────────────────────\n";
-                        oss << "📈 Active Trades (" << active_trades_.size() << "):\n";
-
-                        if (active_trades_.empty()) {
-                            oss << " • none\n";
-                        } else {
-                            for (const auto& [sym, trade] : active_trades_) {
-                                oss << " • " << sym
-                                    << " | side="  << trade.side
-                                    << " | amt="   << trade.amount
-                                    << " | entry=" << trade.entry
-                                    << " | tp="    << trade.tp
-                                    << " | sl="    << trade.sl
-                                    << "\n";
-                            }
-                        }
-
-                        oss << "────────────────────────────"; // ⚠️ no trailing \n here
-
-                        std::string block = oss.str();
-                        size_t current_lines = std::count(block.begin(), block.end(), '\n') + 1;
-
-                        // Move cursor up to overwrite previous dashboard fully
-                        if (last_lines > 0)
-                            std::cout << "\033[" << last_lines << "F"; // Move cursor up N lines to start of block
-
-                        // Now clear each line before printing the new block
-                        std::istringstream iss(block);
-                        std::string line;
-                        while (std::getline(iss, line)) {
-                            std::cout << "\033[2K" << line << "\n"; // 2K clears entire line
-                        }
-
-                        std::cout << std::flush;
-                        last_lines = current_lines;
-                    }
 
                 }
                 else if (!j.contains("result")) {

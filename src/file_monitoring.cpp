@@ -75,6 +75,9 @@ EnvData load_config(const std::string& path) {
     cfg.market_data     = safe_getenv("MARKET_DATA");
     cfg.TP              = parse_double(safe_getenv("TP"), 0.0);
     cfg.SL              = parse_double(safe_getenv("SL"), 0.0);
+    cfg.telegram_token  = safe_getenv("TELEGRAM_TOKEN");
+    cfg.chat_id         = safe_getenv("CHAT_ID");
+    cfg.thread_id       = safe_getenv("THREAD_ID");
 
     return cfg;
 }

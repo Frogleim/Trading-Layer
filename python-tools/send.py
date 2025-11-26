@@ -9,7 +9,7 @@ def main():
 
     # === Choose your endpoint ===
     # For same-machine TCP:
-    endpoint = "tcp://localhost:5556"
+    endpoint = "tcp://localhost:5555"
     # For same-machine IPC (faster, if your bot uses ipc://):
     # endpoint = "ipc:///tmp/virtuum_signals.ipc"
 

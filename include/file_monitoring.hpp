@@ -20,6 +20,10 @@ struct EnvData {
     bool is_testnet;
     double TP;
     double SL;
+    std::string telegram_token;
+    std::string chat_id;
+    std::string thread_id;
+
 };
 
 

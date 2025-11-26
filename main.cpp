@@ -2,7 +2,7 @@
 #include <thread>
 #include "binance_websocket.hpp"
 #include "zmq_publisher.hpp"
-
+#include "telegram.hpp"
 int main() {
     try {
         auto trader = std::make_shared<MonitorTrades>();
@@ -33,3 +33,4 @@ int main() {
 
     return 0;
 }
+

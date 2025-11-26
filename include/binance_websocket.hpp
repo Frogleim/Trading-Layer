@@ -14,6 +14,9 @@
 #include <mutex>
 #include <zmq.hpp>
 #include "zmq_publisher.hpp"
+#include "telegram_worker.hpp"
+#include "telegram.hpp"
+#include "system_logger.hpp"
 
 // Aliases
 namespace net = boost::asio;
@@ -77,6 +80,7 @@ static const std::unordered_map<std::string, double> TICK_SIZE_MAP = {
 
 // ================= MonitorTrades =================
 class MonitorTrades {
+    // Telegram* tg = &this->telegram;
 public:
     // --- Static config ---
     static const std::string API_KEY;
@@ -110,6 +114,11 @@ public:
                                    const std::string& symbol,
                                    double quantity,
                                    double mark_price);
+
+
+    void algo_TP_orders(const std::string& side, const std::string& symbol, double quantity, double entry_price);
+    void algo_SL_orders(const std::string& side, const std::string& symbol, double quantity, double entry_price);
+
     void run_event_loop();
 
     template<typename F>
@@ -118,6 +127,10 @@ public:
     }
 
 private:
+
+    Telegram telegram;
+    TelegramWorker tg_worker;
+    Logger logger;
     // --- ZMQ ---
     zmq::context_t zmq_ctx_{1};
     zmq::socket_t zmq_pub_;
@@ -166,3 +179,5 @@ inline std::map<std::string, PositionInfo> active_positions;
 inline std::mutex log_mutex;
 inline std::vector<std::string> recent_logs;
 inline auto START_TIME = std::chrono::system_clock::now();
+
+inline double WALLET = 500.0;
