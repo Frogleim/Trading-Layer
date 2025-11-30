@@ -17,6 +17,7 @@
 #include "telegram_worker.hpp"
 #include "telegram.hpp"
 #include "system_logger.hpp"
+#include "tools.hpp"
 
 // Aliases
 namespace net = boost::asio;
@@ -28,6 +29,10 @@ using ssl_stream = ssl::stream<tcp::socket>;
 using websocket_t = websocket::stream<ssl_stream>;
 
 // ================= Utility structs =================
+
+
+
+
 struct PositionInfo {
     bool active = false;
     std::string direction;
@@ -116,8 +121,8 @@ public:
                                    double mark_price);
 
 
-    void algo_TP_orders(const std::string& side, const std::string& symbol, double quantity, double entry_price);
-    void algo_SL_orders(const std::string& side, const std::string& symbol, double quantity, double entry_price);
+    void algo_TP_orders(const std::string& side, const std::string& symbol, double quantity, double entry_price, double tp);
+    void algo_SL_orders(const std::string& side, const std::string& symbol, double quantity, double entry_price, double sl);
 
     void run_event_loop();
 
@@ -169,6 +174,8 @@ private:
     std::unordered_map<std::string, bool> closing_trades_;
     std::unordered_map<std::string, ActiveTrade> active_trades_;
     std::unordered_map<std::string, double> latest_mark_prices_;
+    std::unordered_map<std::string, L2OrderBook> books_;
+    std::mutex books_mutex_;
 
     // --- Helpers ---
     ZMQComm zmq;

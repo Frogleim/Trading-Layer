@@ -5,7 +5,21 @@
 #include <map>
 #include <chrono>
 
+struct Level {
+    double price;
+    double size;
+};
 
+struct TPSL {
+    double tp;
+    double sl;
+};
+
+
+struct L2OrderBook {
+    std::vector<Level> bids;
+    std::vector<Level> asks;
+};
 
 long long current_timestamp_ms();
 std::string current_timestamp();
