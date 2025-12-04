@@ -333,7 +333,7 @@ void MonitorTrades::start_markprice_read() {
                                 net::post(io_private_, [this, symbol, trade, mark_price]() {
                                     std::string close_side =
                                         (trade.side == "LONG") ? "SELL" : "BUY";
-                                    adaptive_order(close_side, symbol, trade.amount, mark_price);
+                                    market_order(close_side, symbol, trade.amount, mark_price);
                                 });
                                 active_trades_.erase(symbol);
 
@@ -402,7 +402,7 @@ void MonitorTrades::start_zmq_listener(){
                     std::cout<<"⏱️ Signal-to-order latency for "<<symbol<<" = "
                              <<latency_us<<" µs ("<<latency_us/1000.0<<" ms)\n";
                     double amount = 0.008;
-                    adaptive_order(side,symbol,amount,price);
+                    market_order(side,symbol,amount,price);
                 });
             }
         }catch(const std::exception& e){
@@ -468,14 +468,7 @@ void MonitorTrades::market_order(const std::string& side,
 
     // === replace the if/else chain ===
     static const std::unordered_map<std::string, double> quantity_map = {
-        {"1000satsusdt", 35000000},
-        {"jellyjellyusdt", 7000},
-        {"gtcusdt", 1200},
-        {"flmusdt", 10000},
-        {"labusdt", 250},
-        {"coaiusdt", 200},
-        {"evaausdt", 300},
-        {"pippinusdt", 300},
+      {"ethusdt", 0.008}
 
 
     };
@@ -551,7 +544,7 @@ void MonitorTrades::handle_external_signal(const std::string& symbol,
 
     // Send entry order
     net::post(io_private_, [this, side, symbol, amount, mark]() {
-        adaptive_order(side, symbol, amount, mark);
+        market_order(side, symbol, amount, mark);
     });
 }
 
@@ -597,7 +590,7 @@ void MonitorTrades::adaptive_order(const std::string& side,
         {"apiKey", API_KEY},
         {"symbol", symbol},
         {"side", side},
-        {"type", order_type},
+        {"type", "MARKET"},
         {"positionSide", "BOTH"},
         {"quantity", std::to_string(quantity)},
         {"timestamp", std::to_string(ts)}
