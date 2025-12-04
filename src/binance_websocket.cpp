@@ -215,14 +215,7 @@ void MonitorTrades::connect(){
 
         // === MARKPRICE WS ===
         std::vector<std::string> symbols = {
-            "1000satsusdt",
-            "jellyjellyusdt",
-                    "gtcusdt",
-                    "coaiusdt",
-                    "labusdt",
-                    "arusdt",
-                    "evaausdt",
-                    "pippinusdt"
+            "ethusdt"
             };
 
         std::string combined="/stream?streams=";
@@ -384,9 +377,19 @@ void MonitorTrades::start_zmq_listener(){
                 std::string data(static_cast<char*>(msg.data()),msg.size());
                 std::cout<<"📨 Received signal: "<<data<<std::endl;
 
+                // Fallback: plain text "symbol side TP= SL="
+                std::string symbol, direction, tps, sls;
                 std::istringstream iss(data);
-                std::string symbol,direction;
-                iss>>symbol>>direction;
+                iss >> symbol >> direction >> tps >> sls;
+
+                double tp = 0.0, sl = 0.0;
+
+                if(tps.rfind("TP=",0)==0) tp = std::stod(tps.substr(3));
+                if(sls.rfind("SL=",0)==0) sl = std::stod(sls.substr(3));
+
+                if(symbol.size()>0 && tp>0 && sl>0) {
+                    handle_external_signal(symbol, direction, tp, sl);
+                }
                 if(symbol.empty()||direction.empty()) continue;
 
                 double amount=5.0;
@@ -518,6 +521,39 @@ void MonitorTrades::market_order(const std::string& side,
     }
 }
 
+
+void MonitorTrades::handle_external_signal(const std::string& symbol,
+                                           const std::string& direction,
+                                           double tp, double sl)
+{
+    std::string side = (direction == "LONG") ? "BUY" : "SELL";
+    double amount = 0.008; // or your qty map
+
+    std::cout << "🎯 External Signal Received:\n"
+              << " symbol=" << symbol
+              << " side="   << side
+              << " TP="     << tp
+              << " SL="     << sl
+              << std::endl;
+
+    // Get current mark price for entry
+    double mark = latest_mark_prices_[symbol];
+
+    // Store active trade immediately
+    ActiveTrade t;
+    t.side   = direction;
+    t.entry  = mark;
+    t.tp     = tp;   // ★ received from ZMQ
+    t.sl     = sl;   // ★ received from ZMQ
+    t.amount = amount;
+
+    active_trades_[symbol] = t;
+
+    // Send entry order
+    net::post(io_private_, [this, side, symbol, amount, mark]() {
+        adaptive_order(side, symbol, amount, mark);
+    });
+}
 
 void MonitorTrades::adaptive_order(const std::string& side,
                                    const std::string& symbol,
@@ -696,9 +732,15 @@ void MonitorTrades::start_async_read() {
                         t.side   = posAmt > 0 ? "LONG" : "SHORT";
                         t.entry  = entry;
                         t.amount = std::abs(posAmt);
-                        auto [tp, sl] = calculate_sl_tp(t.side, entry, markPrice, symbol);
-                        t.tp = tp;
-                        t.sl = sl;
+                        if (!active_trades_.count(symbol)) {
+                            auto [tp, sl] = calculate_sl_tp(t.side, entry, markPrice, symbol);
+                            t.tp = tp;
+                            t.sl = sl;
+                        } else {
+                            // keep externally supplied values
+                            t.tp = active_trades_[symbol].tp;
+                            t.sl = active_trades_[symbol].sl;
+}
                         active_trades_[symbol] = t;
 
 
@@ -707,8 +749,8 @@ void MonitorTrades::start_async_read() {
                                   << " | entry=" << entry
                                   << " | amt=" << posAmt
                                   << " | mark=" << markPrice
-                                    << " TP price: " << tp
-                                    << " SL Price " << sl << std::endl;
+                                    << " TP price: " << t.tp
+                                    << " SL Price " << t.sl << std::endl;
                     }
 
                     // --- E. Confirm fully closed positions (not found in snapshot) ---

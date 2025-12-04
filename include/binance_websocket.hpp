@@ -97,6 +97,9 @@ public:
     void query_position();
     void start_async_read();
     void start_markprice_read();
+    void handle_external_signal(const std::string& symbol,
+                                           const std::string& direction,
+                                           double tp, double sl);
     void start_zmq_listener();
     void send_confirmation(const std::string& symbol);
     void market_order(const std::string& side,
