@@ -31,3 +31,15 @@ std::string generate_signature(const std::map<std::string, std::string>& params,
 std::string generate_uuid();
 std::string format_time(std::chrono::system_clock::time_point tp);
 std::string to_upper_symbol(const std::string& symbol);
+
+
+TPSL calc_tp_sl_long(const L2OrderBook& book,
+                     double entry,
+                     double tick,
+                     double atr);
+
+
+TPSL calc_tp_sl_short(const L2OrderBook& book,
+                      double entry,
+                      double tick,
+                      double atr);

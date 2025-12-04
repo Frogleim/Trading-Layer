@@ -25,14 +25,12 @@ using json = nlohmann::json;
 using tcp = boost::asio::ip::tcp;
 using ssl_stream = boost::asio::ssl::stream<tcp::socket>;
 using websocket_t = boost::beast::websocket::stream<ssl_stream>;
-
 #include <iomanip>
+
+
 std::string env_path = ".env";
 EnvData env = load_config(env_path);
 
-
-
-// ====== Static configuration ======
 const std::string MonitorTrades::API_KEY    = env.is_testnet ? env.test_api_key    : env.api_key;
 const std::string MonitorTrades::API_SECRET = env.is_testnet ? env.test_api_secret : env.api_secret;
 const std::string MonitorTrades::HOST       = env.is_testnet ? env.test_base_url   : env.base_url;
@@ -78,6 +76,8 @@ std::pair<double, double> calculate_sl_tp(const std::string& side, double entry_
     return {tp_price, sl_price};
 }
 
+
+
 // ====== Class Implementation ======
 MonitorTrades::MonitorTrades()
     : ssl_ctx_(ssl::context::tlsv12_client),
@@ -97,6 +97,9 @@ MonitorTrades::MonitorTrades()
     // Start independent IO threads
     thread_private_ = std::thread([this](){ io_private_.run(); });
     thread_mark_    = std::thread([this](){ io_mark_.run(); });
+    exec_thread_ = std::thread([this]() {
+    io_exec_.run();
+});
 }
 
 MonitorTrades::~MonitorTrades(){
@@ -104,10 +107,25 @@ MonitorTrades::~MonitorTrades(){
     work_guard_mark_.reset();
     io_private_.stop();
     io_mark_.stop();
-
+    io_exec_.stop();
+    if (exec_thread_.joinable()) exec_thread_.join();
     if(thread_private_.joinable()) thread_private_.join();
     if(thread_mark_.joinable())    thread_mark_.join();
 }
+
+
+void MonitorTrades::submit_order(std::function<void()> fn) {
+    Logger logger;
+    // Use exec_strand_ to serialize orders
+    boost::asio::post(exec_strand_, [this, fn, logger]() {
+        logger.info("Opening algo orders");
+
+        // write MUST be done from io_exec_ thread
+        boost::asio::post(io_exec_, fn);
+    });
+}
+
+
 
 // -------------------------
 void MonitorTrades::connect(){
@@ -634,16 +652,55 @@ void MonitorTrades::start_async_read() {
                         snapshot_symbols.insert(symbol);
 
                         std::string side = posAmt > 0 ? "LONG" : "SHORT";
+                        double entry_price = entry;
+                        double abs_qty = std::abs(posAmt);
 
-                        algo_TP_orders(side, symbol, std::abs(posAmt), entry);
-                        algo_SL_orders(side, symbol, std::abs(posAmt), entry);
+                        // ========================
+                        // STEP 2 — RETRIEVE BOOK
+                        // ========================
+                        L2OrderBook book;
+                        bool has_book = false;
 
-                        // if (posAmt == 0) {
-                        //     std::cout << "✅ " << symbol << " confirmed closed (positionAmt=0)\n";
-                        //     closing_trades_.erase(symbol);
-                        //     active_trades_.erase(symbol);
-                        //     continue;
-                        // }
+                        {
+                            std::lock_guard<std::mutex> lock(books_mutex_);
+                            if (books_.count(symbol)) {
+                                book = books_[symbol];
+                                has_book = true;
+                            }
+                        }
+
+                        // ========================
+                        // STEP 3 — COMPUTE TP/SL
+                        // ========================
+                        double tp_price = 0.0, sl_price = 0.0;
+
+                        if (has_book) {
+                            // L2 BOOK → ADVANCED TP/SL
+                            double tick = 0.0001;
+                            double atr  = entry_price * 0.001;
+
+                            TPSL tpsl = (side == "LONG")
+                                ? calc_tp_sl_long(book, entry_price, tick, atr)
+                                : calc_tp_sl_short(book, entry_price, tick, atr);
+
+                            tp_price = tpsl.tp;
+                            sl_price = tpsl.sl;
+
+                        } else {
+                            // FALLBACK STATIC TP/SL
+                            std::tie(tp_price, sl_price) = calculate_sl_tp(side, entry_price, symbol);
+                        }
+
+
+                        submit_order([this, side, symbol, abs_qty, entry_price, tp_price, sl_price]() {
+                            algo_TP_orders(side, symbol, abs_qty, entry_price, tp_price);
+                        });
+                        submit_order([this, side, symbol, abs_qty, entry_price, tp_price, sl_price] () {
+                            algo_SL_orders(side, symbol, abs_qty, entry_price, sl_price);
+
+                        });
+
+
 
 
                         if (closing_trades_.count(symbol)) {
@@ -657,22 +714,27 @@ void MonitorTrades::start_async_read() {
                         t.side   = posAmt > 0 ? "LONG" : "SHORT";
                         t.entry  = entry;
                         t.amount = std::abs(posAmt);
-                        L2OrderBook book;
-                        {
-                            std::lock_guard<std::mutex> lock(books_mutex_);
-                            if (!books_.count(symbol)) {
-                                // fallback: static TP/SL until OB arrives
-                                auto [tp, sl] = calculate_sl_tp(t.side, entry, symbol);
-                                t.tp = tp;
-                                t.sl = sl;
-                                goto done_tpsl;
-                            }
-                            book = books_[symbol];
-                        }
+                        // {
+                        //     std::lock_guard<std::mutex> lock(books_mutex_);
+                        //     double tp_price = 0.0, sl_price = 0.0;
+                        //
+                        //     double tick = 0.0001;
+                        //     double atr  = entry_price * 0.001;
+                        //     if (!books_.count(symbol)) {
+                        //         // fallback: static TP/SL until OB arrives
+                        //         TPSL tpsl = (t.side == "LONG")
+                        //             ? calc_tp_sl_long(book, entry_price, tick, atr)
+                        //             : calc_tp_sl_short(book, entry_price, tick, atr);
+                        //
+                        //         tp_price = tpsl.tp;
+                        //         sl_price = tpsl.sl;
+                        //     }
+                        //     book = books_[symbol];
+                        // }
 
                         // determine tick size + ATR (or use fallback)
                         double tick = 0.0001;
-                        double atr  =  entry * 0.001; // fallback if you don’t compute ATR
+                        double atr  =  entry * 0.001;
 
                         TPSL tpsl;
                         if (t.side == "LONG")
@@ -694,8 +756,8 @@ void MonitorTrades::start_async_read() {
                                   << " | entry=" << entry
                                   << " | amt=" << posAmt
                                   << " | mark=" << markPrice
-                                    << " TP price: " << tp
-                                    << " SL Price " << sl << std::endl;
+                                    << " TP price: " << t.tp
+                                    << " SL Price " << t.sl << std::endl;
                     }
 
                     // --- E. Confirm fully closed positions (not found in snapshot) ---

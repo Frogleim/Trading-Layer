@@ -125,6 +125,7 @@ public:
     void algo_SL_orders(const std::string& side, const std::string& symbol, double quantity, double entry_price, double sl);
 
     void run_event_loop();
+    void submit_order(std::function<void()> fn);
 
     template<typename F>
     void post(F&& fn) {
@@ -176,6 +177,9 @@ private:
     std::unordered_map<std::string, double> latest_mark_prices_;
     std::unordered_map<std::string, L2OrderBook> books_;
     std::mutex books_mutex_;
+    boost::asio::io_context io_exec_;
+    std::thread exec_thread_;
+    boost::asio::io_context::strand exec_strand_{io_exec_};
 
     // --- Helpers ---
     ZMQComm zmq;
