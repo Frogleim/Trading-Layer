@@ -392,16 +392,16 @@ void MonitorTrades::start_zmq_listener(){
                 }
                 if(symbol.empty()||direction.empty()) continue;
 
-                double amount=5.0;
                 double price=0.0;
                 std::string side=(direction=="LONG")?"BUY":"SELL";
 
-                net::post(io_private_,[this,side,symbol,amount,price,t_recv](){
+                net::post(io_private_,[this,side,symbol,price,t_recv](){
                     auto t_exec=std::chrono::high_resolution_clock::now();
                     auto latency_us=
                         std::chrono::duration_cast<std::chrono::microseconds>(t_exec-t_recv).count();
                     std::cout<<"⏱️ Signal-to-order latency for "<<symbol<<" = "
                              <<latency_us<<" µs ("<<latency_us/1000.0<<" ms)\n";
+                    double amount = 0.008;
                     adaptive_order(side,symbol,amount,price);
                 });
             }
