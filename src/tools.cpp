@@ -25,9 +25,12 @@ long long current_timestamp_ms() {
 
 
 std::string to_lower_symbol(const std::string& str) {
-    std::transform(str.begin(), str.end(), str.begin(),
-                   [](unsigned char c){ return std::tolower(c); });
-    return str;
+    std::string out = str;  // make a modifiable copy
+
+    std::transform(out.begin(), out.end(), out.begin(),
+        [](unsigned char c) { return std::tolower(c); });
+
+    return out;
 }
 
 
