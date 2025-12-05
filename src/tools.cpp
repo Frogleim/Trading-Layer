@@ -24,6 +24,12 @@ long long current_timestamp_ms() {
 }
 
 
+std::string to_lower(std::string str) {
+    std::transform(str.begin(), str.end(), str.begin(), ::tolower, [](unsigned char c) { return std::tolower(c); });
+
+    return str;
+}
+
 
 std::string generate_uuid() {
     uuid_t uuid;

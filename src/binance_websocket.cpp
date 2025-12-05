@@ -548,78 +548,7 @@ void MonitorTrades::handle_external_signal(const std::string& symbol,
     });
 }
 
-void MonitorTrades::adaptive_order(const std::string& side,
-                                   const std::string& symbol,
-                                   double quantity,
-                                   double mark_price)
-{
-    if (!connected_) {
-        std::cerr << "⚠️ Not connected, skipping order.\n";
-        return;
-    }
 
-    // === Order shading parameters ===
-    constexpr double tick_size = 0.0001;      // change per price tick (update per symbol)
-    constexpr double shade_ticks = 3;         // ±3 ticks
-    constexpr double spread_threshold = 0.001; // 0.1%
-
-    // --- Fetch best bid/ask (you can maintain from mark stream or REST) ---
-    double best_bid = orderbook_[symbol].best_bid;
-    double best_ask = orderbook_[symbol].best_ask;
-    double spread   = (best_ask - best_bid) / ((best_ask + best_bid) / 2.0);
-
-    // --- Decide limit price ---
-    if (side == "BUY") {
-        if (spread < spread_threshold)
-            mark_price = best_bid + shade_ticks * tick_size;
-        else
-            mark_price = best_ask;  // if spread wide, take market
-    } else {
-        if (spread < spread_threshold)
-            mark_price = best_ask - shade_ticks * tick_size;
-        else
-            mark_price = best_bid;
-    }
-
-    // --- Decide order type ---
-    std::string order_type = (spread < spread_threshold) ? "LIMIT" : "MARKET";
-    std::string time_in_force = "GTC";
-
-    long long ts = current_timestamp_ms();
-    std::map<std::string, std::string> params = {
-        {"apiKey", API_KEY},
-        {"symbol", symbol},
-        {"side", side},
-        {"type", "MARKET"},
-        {"positionSide", "BOTH"},
-        {"quantity", std::to_string(quantity)},
-        {"timestamp", std::to_string(ts)}
-    };
-
-    if (order_type == "LIMIT") {
-        params["price"] = format_price(mark_price, symbol);
-        params["timeInForce"] = time_in_force;
-    }
-
-    params["signature"] = generate_signature(params, API_SECRET);
-
-    json req = {
-        {"id", generate_uuid()},
-        {"method", "order.place"},
-        {"params", params}
-    };
-
-    try {
-        ws_->write(net::buffer(req.dump()));
-        std::cout << "📤 Sent " << order_type << " " << side
-                  << " " << symbol
-                  << " qty=" << quantity
-                  << " @ " << mark_price
-                  << " (spread=" << spread*100 << "%)\n";
-    } catch (std::exception& e) {
-        std::cerr << "❌ Error sending shaded order: " << e.what() << std::endl;
-    }
-}
 
 // -------------------------
 void MonitorTrades::start_async_read() {
@@ -697,7 +626,7 @@ void MonitorTrades::start_async_read() {
                     std::unordered_set<std::string> snapshot_symbols;
 
                     for (const auto& pos : j["result"]) {
-                        std::string symbol   = pos.value("symbol", "");
+                        std::string symbol   = to_lower_symbol(pos.value("symbol", ""));
                         double entry         = std::stod(pos.value("entryPrice", "0"));
                         double posAmt        = std::stod(pos.value("positionAmt", "0"));
                         double markPrice     = std::stod(pos.value("markPrice", "0"));

@@ -17,3 +17,6 @@ std::string generate_signature(const std::map<std::string, std::string>& params,
 std::string generate_uuid();
 std::string format_time(std::chrono::system_clock::time_point tp);
 std::string to_upper_symbol(const std::string& symbol);
+
+
+std::string to_lower_symbol(const std::string& symbol);
