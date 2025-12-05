@@ -518,7 +518,7 @@ void MonitorTrades::handle_external_signal(const std::string& symbol,
                                            double tp, double sl)
 {
     std::string side = (direction == "LONG") ? "BUY" : "SELL";
-    double amount = 0.008; // or your qty map
+    double amount = 0.08; // or your qty map
 
     std::cout << "🎯 External Signal Received:\n"
               << " symbol=" << symbol
