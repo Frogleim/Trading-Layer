@@ -41,5 +41,5 @@ target_link_libraries(Trading_Layer PRIVATE
         OpenSSL::SSL
         OpenSSL::Crypto
         zmq
-        uuid
+#        uuid
 )
