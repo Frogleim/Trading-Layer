@@ -40,6 +40,7 @@ const std::string MonitorTrades::API_KEY    = env.is_testnet ? env.test_api_key 
 const std::string MonitorTrades::API_SECRET = env.is_testnet ? env.test_api_secret : env.api_secret;
 const std::string MonitorTrades::HOST       = env.is_testnet ? env.test_base_url   : env.base_url;
 const std::string MonitorTrades::MARK_PRICE_HOST = env.market_data;
+double pos_amt = env.pos_amt;
 
 const std::string MonitorTrades::PORT   = "443";
 const std::string MonitorTrades::TARGET = "/ws-fapi/v1";  // private WebSocket endpoint
@@ -390,10 +391,9 @@ void MonitorTrades::start_zmq_listener(){
 
                 if(symbol.empty()||direction.empty()) continue;
 
-                double price=0.0;
                 std::string side=(direction=="LONG")?"BUY":"SELL";
 
-                net::post(io_private_,[this,side,symbol,price,t_recv, tp, sl](){
+                net::post(io_private_,[this,side,symbol,t_recv, tp, sl](){
                     auto t_exec=std::chrono::high_resolution_clock::now();
                     auto latency_us=
                         std::chrono::duration_cast<std::chrono::microseconds>(t_exec-t_recv).count();
@@ -466,7 +466,7 @@ void MonitorTrades::market_order(const std::string& side,
 
     // === replace the if/else chain ===
     static const std::unordered_map<std::string, double> quantity_map = {
-      {"coaiusdt", 6}
+      {"coaiusdt", pos_amt}
 
 
     };
@@ -518,7 +518,7 @@ void MonitorTrades::handle_external_signal(const std::string& symbol,
                                            double tp, double sl)
 {
     std::string side = (direction == "LONG") ? "BUY" : "SELL";
-    double amount = 6; // or your qty map
+    double amount = pos_amt; // or your qty map
 
     std::cout << "🎯 External Signal Received:\n"
               << " symbol=" << symbol

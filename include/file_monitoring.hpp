@@ -20,6 +20,7 @@ struct EnvData {
     bool is_testnet;
     double TP;
     double SL;
+    double pos_amt;
 };
 
 

@@ -75,6 +75,7 @@ EnvData load_config(const std::string& path) {
     cfg.market_data     = safe_getenv("MARKET_DATA");
     cfg.TP              = parse_double(safe_getenv("TP"), 0.0);
     cfg.SL              = parse_double(safe_getenv("SL"), 0.0);
+    cfg.pos_amt         = parse_double(safe_getenv("POS_SIZE"), 0.0);
 
     return cfg;
 }
