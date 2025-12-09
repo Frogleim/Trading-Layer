@@ -528,6 +528,7 @@ void MonitorTrades::handle_external_signal(const std::string& symbol,
               << std::endl;
 
     // Get current mark price for entry
+    std::string symbol_lower = to_lower_symbol(symbol);
     double mark = latest_mark_prices_[symbol];
 
     // Store active trade immediately
