@@ -16,8 +16,9 @@
 #include <deque>
 #include "system_logger.hpp"
 #include "logger.hpp"
-#include <numeric>   // for std::accumulate
-#include <cmath>     // for std::log, std::sqrt
+#include <numeric>
+#include <cmath>
+#include "telegram.hpp"
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
@@ -300,7 +301,7 @@ void MonitorTrades::start_markprice_read() {
 
                         latest_mark_prices_[symbol] = mark_price;
                         vola_map[symbol].add(mark_price);
-
+                        std::cout << "Mark price: " << mark_price << std::endl;
                         // 🔹 TP/SL logic stays exactly as before
                         if (active_trades_.count(symbol)) {
                             auto& trade = active_trades_.at(symbol);
@@ -317,7 +318,7 @@ void MonitorTrades::start_markprice_read() {
                                 hit_tp = mark_price <= trade.tp;
                                 hit_sl = mark_price >= trade.sl;
                             }
-
+                            Telegram telegram;
                             if (hit_tp || hit_sl) {
                                 std::string reason = hit_tp ? "🎯 TP hit" : "🛑 SL hit";
                                 std::cout << reason << " for " << symbol
@@ -325,9 +326,7 @@ void MonitorTrades::start_markprice_read() {
                                           << " entry=" << trade.entry
                                           << " tp=" << trade.tp
                                           << " sl=" << trade.sl << std::endl;
-
                                 Logger::info(reason + " " + symbol);
-
                                 closing_trades_[symbol] = true;
 
                                 // ✅ Close via adaptive_order inside private io_context
@@ -339,11 +338,17 @@ void MonitorTrades::start_markprice_read() {
                                 active_trades_.erase(symbol);
 
                                 send_confirmation(symbol);
+
                                 double pnl = 0.0;
                                 if (trade.side == "LONG")
                                     pnl = (mark_price - trade.entry) / trade.entry * 100.0;
                                 else
                                     pnl = (trade.entry - mark_price) / trade.entry * 100.0;
+                                std::string telegram_msg = reason + " " + symbol + "\n" + "Entry: " + std::to_string(mark_price) + "\n" + "TP: " + std::to_string(trade.tp) + "\n" + "SL: " + std::to_string(trade.sl) + "\n" + "Pnl: " + std::to_string(pnl);
+                                std::thread send_telegram([=]() mutable {
+                                    telegram.send_msg(telegram_msg);
+                                });
+                                send_telegram.detach();
                                 append_trade_to_csv(symbol, trade.side, trade.entry, trade.tp,
                                                     trade.sl, mark_price, reason, pnl, 0);
                             }
@@ -370,14 +375,17 @@ void MonitorTrades::start_zmq_listener(){
             subscriber.connect(endpoint);
             subscriber.set(zmq::sockopt::subscribe,"");
             std::cout<<"📡 Listening for signals on "<<endpoint<<std::endl;
-
             while(true){
+                Telegram telegram;
                 zmq::message_t msg;
                 if(!subscriber.recv(msg,zmq::recv_flags::none)) continue;
                 auto t_recv=std::chrono::high_resolution_clock::now();
                 std::string data(static_cast<char*>(msg.data()),msg.size());
                 std::cout<<"📨 Received signal: "<<data<<std::endl;
-
+                std::thread telegram_send([=]() mutable {
+                   telegram.send_msg("📨 Received signal: " + data);
+                });
+                telegram_send.detach();
                 // Fallback: plain text "symbol side TP= SL="
                 std::string symbol, direction, tps, sls;
                 std::istringstream iss(data);

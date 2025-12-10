@@ -16,6 +16,7 @@ add_executable(Trading_Layer
         src/tools.cpp
         src/system_logger.cpp
         src/logger.cpp
+        src/telegram.cpp
 
 
 )

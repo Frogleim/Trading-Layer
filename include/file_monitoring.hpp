@@ -21,6 +21,9 @@ struct EnvData {
     double TP;
     double SL;
     double pos_amt;
+    std::string telegram_token;
+    std::string chat_id;
+    std::string thread_id;
 };
 
 
