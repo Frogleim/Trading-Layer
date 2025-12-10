@@ -8,7 +8,6 @@
 
 #include "file_monitoring.hpp"
 #include <curl/curl.h>
-#include <__ostream/basic_ostream.h>
 
 
 std::string env_paths = ".env";
