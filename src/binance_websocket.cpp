@@ -562,13 +562,13 @@ void MonitorTrades::check_positions_exit(const std::string& symbol, const json& 
     bool empty_results = !has_results || query_data["results"].empty();
     bool is_active = active_trades_.count(symbol);
 
-    if (empty_results && is_active) {
+    if (!query_data.contains("results") && query_data["results"].empty() && active_trades_.count(symbol)) {
         Logger::info("Found trade data mismatch...");
         active_trades_.erase(symbol);
         send_confirmation(symbol);
 
 
-    } else if (has_results && !empty_results && !is_active) {
+    } else if (query_data.contains("results") && !query_data["results"].empty() && !active_trades_.count(symbol)) {
         for (const auto& pos : query_data["result"]) {
             std::string symbol   = to_lower_symbol(pos.value("symbol", ""));
             double entry         = std::stod(pos.value("entryPrice", "0"));
