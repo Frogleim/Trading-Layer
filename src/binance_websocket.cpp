@@ -556,6 +556,14 @@ void MonitorTrades::handle_external_signal(const std::string& symbol,
 }
 
 
+void MonitorTrades::check_positions_exit(const std::string& symbol, const json& query_data) {
+
+    if (!query_data.contains["results"] || query_data["results"].empty() && active_trades_.count(symbol)) {
+        Logger::info("Found trade data mismatch...");
+        active_trades_.erase(symbol);
+
+    }
+}
 
 // -------------------------
 void MonitorTrades::start_async_read() {
@@ -630,25 +638,7 @@ void MonitorTrades::start_async_read() {
                     }
                 }
 
-                // if (it != j.end() && !it->empty()) {
-                //     for (const auto& pos : *it) {
-                //         std::string symbol = to_lower_symbol(pos.value("symbol", ""));
-                //         if (symbol == "coaiusdt") {
-                //             found = true;
-                //             break;
-                //         }
-                //     }
-                // }
-                // if (!found) {
-                //         active_trades_.erase("coaiusdt");
-                //
-                //         std::thread([=]() mutable {
-                //             telegram.send_msg("❗ Failed to detect opened position for coaiusdt" );
-                //         }).detach();
-                //
-                //         send_confirmation("coaiusdt");
-                //         return;
-                //     }
+
 
                 if (j.contains("result") && j["result"].is_array()) {
                     std::unordered_set<std::string> snapshot_symbols;
@@ -670,7 +660,9 @@ void MonitorTrades::start_async_read() {
                             active_trades_.erase(symbol);
                             continue;
                         }
-
+                        std::thread([this, symbol, j]() mutable {
+                            check_positions_exit(symbol, j);
+                        }).detach();
                         // --- B. Skip while waiting confirmation ---
                         if (closing_trades_.count(symbol)) {
                             std::cout << "⏳ Waiting for close confirmation: " << symbol << std::endl;

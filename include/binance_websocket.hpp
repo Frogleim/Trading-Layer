@@ -14,6 +14,7 @@
 #include <mutex>
 #include <zmq.hpp>
 #include "zmq_publisher.hpp"
+#include <nlohmann/json.hpp>
 
 // Aliases
 namespace net = boost::asio;
@@ -23,6 +24,7 @@ namespace websocket = beast::websocket;
 using tcp = net::ip::tcp;
 using ssl_stream = ssl::stream<tcp::socket>;
 using websocket_t = websocket::stream<ssl_stream>;
+using json = nlohmann::json;
 
 // ================= Utility structs =================
 struct PositionInfo {
@@ -106,6 +108,9 @@ public:
                       const std::string& symbol,
                       double quantity,
                       double entry_price);
+
+
+    void check_positions_exit(const std::string& symbol, const json& query_data);
 
     void adaptive_order(const std::string& side,
                                    const std::string& symbol,
