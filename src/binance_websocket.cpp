@@ -557,11 +557,30 @@ void MonitorTrades::handle_external_signal(const std::string& symbol,
 
 
 void MonitorTrades::check_positions_exit(const std::string& symbol, const json& query_data) {
+    Telegram telegram;
+    bool has_results = query_data.contains("results") && query_data["results"].is_array();
+    bool empty_results = !has_results || query_data["results"].empty();
+    bool is_active = active_trades_.count(symbol);
 
-    if (!query_data.contains("results") || query_data["results"].empty() && active_trades_.count(symbol)) {
+    if (empty_results && is_active) {
         Logger::info("Found trade data mismatch...");
         active_trades_.erase(symbol);
+        send_confirmation(symbol);
 
+
+    } else if (has_results && !empty_results && !is_active) {
+        for (const auto& pos : query_data["result"]) {
+            std::string symbol   = to_lower_symbol(pos.value("symbol", ""));
+            double entry         = std::stod(pos.value("entryPrice", "0"));
+            double posAmt        = std::stod(pos.value("positionAmt", "0"));
+            double markPrice     = std::stod(pos.value("markPrice", "0"));
+            double unrealizedPnl = std::stod(pos.value("unrealizedPnl", "0"));
+            std::string side = (posAmt > 0) ? "LONG" : "SHORT";
+            market_order(side, symbol, pos_amt, markPrice);
+            send_confirmation(symbol);
+            telegram.send_msg("Position Closed with PnL: " + std::to_string(unrealizedPnl));
+
+        }
     }
 }
 
