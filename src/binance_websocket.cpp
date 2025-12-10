@@ -558,7 +558,7 @@ void MonitorTrades::handle_external_signal(const std::string& symbol,
 
 void MonitorTrades::check_positions_exit(const std::string& symbol, const json& query_data) {
 
-    if (!query_data.contains["results"] || query_data["results"].empty() && active_trades_.count(symbol)) {
+    if (!query_data.contains("results") || query_data["results"].empty() && active_trades_.count(symbol)) {
         Logger::info("Found trade data mismatch...");
         active_trades_.erase(symbol);
 
