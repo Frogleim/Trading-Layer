@@ -584,6 +584,7 @@ void MonitorTrades::start_async_read() {
             buffer_.consume(buffer_.size());
 
             try {
+                Telegram telegram;
                 auto j = nlohmann::json::parse(msg);
                 std::cout << j.dump() << std::endl;
                 if (j.contains("stream") && j.contains("data")) {
@@ -628,7 +629,29 @@ void MonitorTrades::start_async_read() {
                         }
                     }
                 }
-                // 🧩 2️⃣ Handle position snapshots
+                auto it = j.find("results");
+                bool found = false;
+
+                if (it != j.end() && !it->empty()) {
+                    for (const auto& pos : *it) {
+                        std::string symbol = to_lower_symbol(pos.value("symbol", ""));
+                        if (symbol == "coaiusdt") {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if (!found) {
+                        active_trades_.erase("coaiusdt");
+
+                        std::thread([=]() mutable {
+                            telegram.send_msg("❗ Failed to detect opened position for coaiusdt" );
+                        }).detach();
+
+                        send_confirmation("coaiusdt");
+                        return;
+                    }
+
                 if (j.contains("result") && j["result"].is_array()) {
                     std::unordered_set<std::string> snapshot_symbols;
 
@@ -640,6 +663,7 @@ void MonitorTrades::start_async_read() {
 
                         if (symbol.empty()) continue;
                         snapshot_symbols.insert(symbol);
+
 
                         // --- A. Handle closed positions (amt = 0) ---
                         if (posAmt == 0) {
