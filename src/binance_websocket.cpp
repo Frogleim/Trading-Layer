@@ -361,7 +361,7 @@ void MonitorTrades::start_markprice_read() {
                           << "\nRaw: " << msg << std::endl;
             }
 
-            // Continue reading
+
             start_markprice_read();
         });
 }
@@ -433,7 +433,7 @@ void MonitorTrades::send_confirmation(const std::string& symbol) {
 
 // -------------------------
 void MonitorTrades::query_position() {
-    if (!connected_) {
+    if (!connected_ || !ws_) {
         std::cerr << "⚠️ Not connected, cannot query position.\n";
         return;
     }
@@ -629,28 +629,26 @@ void MonitorTrades::start_async_read() {
                         }
                     }
                 }
-                auto it = j.find("results");
-                bool found = false;
 
-                if (it != j.end() && !it->empty()) {
-                    for (const auto& pos : *it) {
-                        std::string symbol = to_lower_symbol(pos.value("symbol", ""));
-                        if (symbol == "coaiusdt") {
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                if (!found) {
-                        active_trades_.erase("coaiusdt");
-
-                        std::thread([=]() mutable {
-                            telegram.send_msg("❗ Failed to detect opened position for coaiusdt" );
-                        }).detach();
-
-                        send_confirmation("coaiusdt");
-                        return;
-                    }
+                // if (it != j.end() && !it->empty()) {
+                //     for (const auto& pos : *it) {
+                //         std::string symbol = to_lower_symbol(pos.value("symbol", ""));
+                //         if (symbol == "coaiusdt") {
+                //             found = true;
+                //             break;
+                //         }
+                //     }
+                // }
+                // if (!found) {
+                //         active_trades_.erase("coaiusdt");
+                //
+                //         std::thread([=]() mutable {
+                //             telegram.send_msg("❗ Failed to detect opened position for coaiusdt" );
+                //         }).detach();
+                //
+                //         send_confirmation("coaiusdt");
+                //         return;
+                //     }
 
                 if (j.contains("result") && j["result"].is_array()) {
                     std::unordered_set<std::string> snapshot_symbols;
@@ -664,7 +662,7 @@ void MonitorTrades::start_async_read() {
                         if (symbol.empty()) continue;
                         snapshot_symbols.insert(symbol);
 
-
+                        std::cout << pos << std::endl;
                         // --- A. Handle closed positions (amt = 0) ---
                         if (posAmt == 0) {
                             std::cout << "✅ " << symbol << " confirmed closed (positionAmt=0)\n";
