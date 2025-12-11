@@ -12,9 +12,12 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <unordered_set>
 #include <zmq.hpp>
 #include "zmq_publisher.hpp"
 #include <nlohmann/json.hpp>
+
+#include "system_logger.hpp"
 
 // Aliases
 namespace net = boost::asio;
@@ -94,6 +97,7 @@ public:
     // --- Lifecycle ---
     MonitorTrades();
     ~MonitorTrades();
+    Logger logger;
 
     void connect();
     void query_position();
@@ -110,12 +114,19 @@ public:
                       double entry_price);
 
 
-    void check_positions_exit(const std::string& symbol, const json& query_data);
+    void check_positions_exit(const json& query_data);
 
     void adaptive_order(const std::string& side,
                                    const std::string& symbol,
                                    double quantity,
                                    double mark_price);
+
+    void algo_TP_orders(const std::string &side, const std::string &symbol,
+    double &quantity, double &tp);
+    void algo_SL_orders(const std::string &side, const std::string &symbol,
+        double &quantity,  double &sl);
+
+
     void run_event_loop();
 
     template<typename F>
@@ -124,6 +135,7 @@ public:
     }
 
 private:
+
     // --- ZMQ ---
     zmq::context_t zmq_ctx_{1};
     zmq::socket_t zmq_pub_;
@@ -162,6 +174,10 @@ private:
     std::unordered_map<std::string, bool> closing_trades_;
     std::unordered_map<std::string, ActiveTrade> active_trades_;
     std::unordered_map<std::string, double> latest_mark_prices_;
+    std::unordered_map<std::string, double> SYMBOLS = {
+    {"coaiusdt", 100}
+    };
+    std::pmr::unordered_set<std::string> algo_orders_created_;
 
     // --- Helpers ---
     ZMQComm zmq;
