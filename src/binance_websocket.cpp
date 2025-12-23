@@ -631,8 +631,12 @@ double &tp) {
 void MonitorTrades::check_positions_exit(const json& query_data) {
     Telegram telegram;
 
-    bool has_result   = query_data.contains("result");
-    bool empty_result =  has_result && query_data["result"].empty();
+    bool has_result = query_data.contains("result");
+    bool empty_result = false;
+
+    if (has_result && query_data.at("result").is_array()) {
+        empty_result = query_data.at("result").empty();
+    }
 
     // Iterate through your global SYMBOLS map
     for (const auto& [symbol, qty] : this->SYMBOLS) {

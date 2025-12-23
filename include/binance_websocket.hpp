@@ -69,13 +69,7 @@ struct OrderBookLogs {
 };
 
 static const std::unordered_map<std::string, double> TICK_SIZE_MAP = {
-    {"coaiusdt",    0.0001},
-    {"labusdt",     0.00001},
-    {"jellyjellyusdt", 0.0001},
-    {"arusdt",      0.0001},
-    {"evausdt",     0.0001},
-    {"pippinusdt",  0.0001},
-    {"1000satsusdt",0.000001}
+    {"1000satsusdt",365000}
 };
 
 // ================= MonitorTrades =================
@@ -175,7 +169,7 @@ private:
     std::unordered_map<std::string, ActiveTrade> active_trades_;
     std::unordered_map<std::string, double> latest_mark_prices_;
     std::unordered_map<std::string, double> SYMBOLS = {
-    {"coaiusdt", 100}
+    {"1000satsusdt", 365000}
     };
     std::pmr::unordered_set<std::string> algo_orders_created_;
 
