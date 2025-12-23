@@ -217,7 +217,7 @@ void MonitorTrades::connect(){
 
         // === MARKPRICE WS ===
         std::vector<std::string> symbols = {
-            "1000satsusdt"
+            "coaiusdt"
             };
 
         std::string combined="/stream?streams=";
@@ -442,7 +442,7 @@ void MonitorTrades::market_order(const std::string& side,
 
     // === replace the if/else chain ===
     static const std::unordered_map<std::string, double> quantity_map = {
-      {"1000satsusdt", pos_amt}
+      {"coaiusdt", pos_amt}
 
 
     };
