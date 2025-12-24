@@ -342,6 +342,7 @@ void MonitorTrades::start_markprice_read() {
                     // === MARK PRICE STREAM ===
                     else if (stream.find("@markPrice") != std::string::npos) {
                         double mark_price = std::stod(d.value("p", "0"));
+                        std::cout <<mark_price <<"\n";
                         if (mark_price <= 0.0) {
                             start_markprice_read();
                             return;
@@ -350,23 +351,30 @@ void MonitorTrades::start_markprice_read() {
                         latest_mark_prices_[symbol] = mark_price;
                         vola_map[symbol].add(mark_price);
                         if (active_trades_.count(symbol)) {
-                            auto& trade = active_trades_.at(symbol);
-                            if (closing_trades_.count(symbol))
-                                return;
+                                auto& trade = active_trades_.at(symbol);
 
-                            bool hit_tp = false;
-                            bool hit_sl = false;
+                                if (closing_trades_.count(symbol))
+                                    goto next; // skip if already closing
 
-                            if (trade.side == "LONG") {
-                                hit_tp = mark_price >= trade.tp;
-                                hit_sl = mark_price <= trade.sl;
-                            } else if (trade.side == "SHORT") {
-                                hit_tp = mark_price <= trade.tp;
-                                hit_sl = mark_price >= trade.sl;
+                                bool hit_tp = false;
+                                bool hit_sl = false;
+
+                                if (trade.side == "LONG" || trade.side == "BUY") {
+                                    hit_tp = mark_price >= trade.tp;
+                                    hit_sl = mark_price <= trade.sl;
+                                } else {
+                                    hit_tp = mark_price <= trade.tp;
+                                    hit_sl = mark_price >= trade.sl;
+                                }
+
+                                if (hit_tp) {
+                                    close_trade(symbol, trade, "TP");
+                                }
+                                else if (hit_sl) {
+                                    close_trade(symbol, trade, "SL");
+                                }
                             }
-                            Telegram telegram;
-
-                        }
+                            next:;
                     }
                 }
             }
@@ -477,6 +485,33 @@ void MonitorTrades::query_position() {
             std::cerr << "❌ query_position error: " << e.what() << std::endl;
         }
     });
+}
+
+void MonitorTrades::close_trade(
+    const std::string& symbol,
+    const ActiveTrade& trade,
+    const std::string& reason
+) {
+    if (closing_trades_.count(symbol))
+        return; // already closing
+    closing_trades_.insert({symbol, true});
+    std::string close_side =
+        (trade.side == "LONG" || trade.side == "BUY") ? "SELL" : "BUY";
+
+    std::cout << "🚨 Closing " << symbol
+              << " reason=" << reason
+              << " mark hit\n";
+
+    Telegram telegram;
+    telegram.send_msg(
+        "🚨 " + symbol +
+        " " + reason +
+        " hit | entry=" + std::to_string(trade.entry) +
+        " tp=" + std::to_string(trade.tp) +
+        " sl=" + std::to_string(trade.sl)
+    );
+
+    market_order(close_side, symbol, trade.amount, latest_mark_prices_[symbol]);
 }
 
 // -------------------------
@@ -793,7 +828,6 @@ void MonitorTrades::start_async_read() {
                         double entry         = std::stod(pos.value("entryPrice", "0"));
                         double posAmt        = std::stod(pos.value("positionAmt", "0"));
                         double markPrice     = std::stod(pos.value("markPrice", "0"));
-
                         if (symbol.empty()) continue;
                         snapshot_symbols.insert(symbol);
 
@@ -838,9 +872,9 @@ void MonitorTrades::start_async_read() {
                             close_side = "SELL";
                         else
                             close_side = "BUY";
-
-                        algo_SL_orders(close_side, symbol, pos_amt,  t.sl);
-                        algo_TP_orders(close_side, symbol, pos_amt,  t.tp);
+                        //
+                        // algo_SL_orders(close_side, symbol, pos_amt,  t.sl);
+                        // algo_TP_orders(close_side, symbol, pos_amt,  t.tp);
 
 
 

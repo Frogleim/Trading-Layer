@@ -111,6 +111,12 @@ public:
     void check_positions_exit(const json& query_data);
     void render_dashboard();
 
+    void close_trade(
+    const std::string& symbol,
+    const ActiveTrade& trade,
+    const std::string& reason
+    );
+
     void adaptive_order(const std::string& side,
                                    const std::string& symbol,
                                    double quantity,
