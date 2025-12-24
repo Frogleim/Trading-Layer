@@ -34,7 +34,8 @@ using websocket_t = boost::beast::websocket::stream<ssl_stream>;
 std::string env_path = ".env";
 EnvData env = load_config(env_path);
 
-
+static size_t last_active_count = SIZE_MAX;
+static bool last_had_trades = false;
 
 // ====== Static configuration ======
 const std::string MonitorTrades::API_KEY    = env.is_testnet ? env.test_api_key    : env.api_key;
@@ -84,6 +85,54 @@ struct VolatilityTracker {
 };
 
 
+void MonitorTrades::render_dashboard() {
+    bool has_trades = !active_trades_.empty();
+
+    // 🔒 Do not redraw if nothing changed
+    if (active_trades_.size() == last_active_count &&
+        has_trades == last_had_trades)
+        return;
+
+    last_active_count = active_trades_.size();
+    last_had_trades   = has_trades;
+
+    static size_t last_lines = 0;
+
+    std::ostringstream oss;
+    oss << "────────────────────────────\n";
+    oss << "📈 Active Trades (" << active_trades_.size() << "):\n";
+
+    if (active_trades_.empty()) {
+        oss << " • none\n";
+    } else {
+        for (const auto& [sym, trade] : active_trades_) {
+            oss << " • " << sym
+                << " | side="  << trade.side
+                << " | amt="   << trade.amount
+                << " | entry=" << trade.entry
+                << " | tp="    << trade.tp
+                << " | sl="    << trade.sl
+                << "\n";
+        }
+    }
+
+    oss << "────────────────────────────";
+
+    std::string block = oss.str();
+    size_t current_lines = std::count(block.begin(), block.end(), '\n') + 1;
+
+    if (last_lines > 0)
+        std::cout << "\033[" << last_lines << "F";
+
+    std::istringstream iss(block);
+    std::string line;
+    while (std::getline(iss, line)) {
+        std::cout << "\033[2K" << line << "\n";
+    }
+
+    std::cout << std::flush;
+    last_lines = current_lines;
+}
 
 std::string format_price(double price, const std::string& symbol) {
     // Find tick size for this symbol
@@ -392,6 +441,7 @@ void MonitorTrades::send_confirmation(const std::string& symbol) {
         std::lock_guard<std::mutex> lock(zmq_mutex_);
         std::string message = "CLOSED " + symbol;
         zmq_pub_.send(zmq::buffer(message), zmq::send_flags::none);
+        logger.info("✅ Sent trade confirmation: " + message);
         std::cout << "✅ Sent trade confirmation: " << message << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "❌ Failed to send ZMQ message: " << e.what() << std::endl;
@@ -643,9 +693,6 @@ void MonitorTrades::check_positions_exit(const json& query_data) {
 
         bool has_active = active_trades_.count(symbol) > 0;
 
-        std::cout << "Symbol: " << symbol
-                  << " empty_result=" << empty_result
-                  << " has_active="   << has_active << std::endl;
 
         // ----------------------------
         // CASE 1: Binance shows NO position → remove stale local state
@@ -711,6 +758,7 @@ void MonitorTrades::start_async_read() {
                 return;
             }
 
+
             std::string msg = beast::buffers_to_string(buffer_.data());
             buffer_.consume(buffer_.size());
 
@@ -720,7 +768,6 @@ void MonitorTrades::start_async_read() {
                 net::post(io_private_, [this, j]() {
                         check_positions_exit(j);
                 });
-                std::cout << j.dump() << std::endl;
 
 
                 // 🧩 1️⃣ Handle order updates (status FILLED, CANCELED, etc.)
@@ -730,13 +777,13 @@ void MonitorTrades::start_async_read() {
                         std::string sym    = r.value("symbol", "");
                         std::string status = r.value("status", "");
                         if (status == "FILLED" || status == "PARTIALLY_FILLED" || status == "CANCELED") {
+                            logger.info("Position: " + status + " | " + sym + " | " + status);
                             if (closing_trades_.erase(sym))
                                 std::cout << "✅ Order fill confirmed, unlocking " << sym << std::endl;
                         }
                     }
                 }
 
-                std::cout << j.dump() << std::endl;
 
                 if (j.contains("result") && j["result"].is_array()) {
                     std::unordered_set<std::string> snapshot_symbols;
@@ -763,7 +810,18 @@ void MonitorTrades::start_async_read() {
                             continue;
                         }
                         std::cout << "\n📈 Active Trades (" << active_trades_.size() << "):\n";
+                        bool state_changed = false;
 
+                        if (posAmt == 0) {
+                            state_changed = true;
+                        }
+
+                        if (!active_trades_.empty()) {
+                            state_changed = true;
+                        }
+
+                        if (state_changed)
+                            render_dashboard();
 
                         ActiveTrade t;
                         t.side   = posAmt > 0 ? "LONG" : "SHORT";
@@ -780,15 +838,7 @@ void MonitorTrades::start_async_read() {
                             close_side = "SELL";
                         else
                             close_side = "BUY";
-                        // if (j.contains("algoStatus")) {
-                        //     std::string status = j.value("algoStatus", "");
-                        //     std::string symbol = to_lower_symbol(j.value("symbol", ""));
-                        //     if (status == "NEW") {
-                        //         algo_orders_created_.insert(symbol);
-                        //     }
-                        // } else if (!j.contains("algoStatus") && !algo_orders_created_.count(symbol)) {
-                        //
-                        // }
+
                         algo_SL_orders(close_side, symbol, pos_amt,  t.sl);
                         algo_TP_orders(close_side, symbol, pos_amt,  t.tp);
 
@@ -813,47 +863,10 @@ void MonitorTrades::start_async_read() {
                         }
                     }
 
-                    static size_t last_lines = 0;
-                    {
-                        std::lock_guard<std::mutex> lock(log_mutex);
 
-                        std::ostringstream oss;
-                        oss << "────────────────────────────\n";
-                        oss << "📈 Active Trades (" << active_trades_.size() << "):\n";
 
-                        if (active_trades_.empty()) {
-                            oss << " • none\n";
-                        } else {
-                            for (const auto& [sym, trade] : active_trades_) {
-                                oss << " • " << sym
-                                    << " | side="  << trade.side
-                                    << " | amt="   << trade.amount
-                                    << " | entry=" << trade.entry
-                                    << " | tp="    << trade.tp
-                                    << " | sl="    << trade.sl
-                                    << "\n";
-                            }
-                        }
 
-                        oss << "────────────────────────────"; // ⚠️ no trailing \n here
 
-                        std::string block = oss.str();
-                        size_t current_lines = std::count(block.begin(), block.end(), '\n') + 1;
-
-                        // Move cursor up to overwrite previous dashboard fully
-                        if (last_lines > 0)
-                            std::cout << "\033[" << last_lines << "F"; // Move cursor up N lines to start of block
-
-                        // Now clear each line before printing the new block
-                        std::istringstream iss(block);
-                        std::string line;
-                        while (std::getline(iss, line)) {
-                            std::cout << "\033[2K" << line << "\n"; // 2K clears entire line
-                        }
-
-                        std::cout << std::flush;
-                        last_lines = current_lines;
-                    }
 
                 }
                 else if (!j.contains("result")) {

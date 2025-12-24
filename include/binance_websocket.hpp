@@ -109,6 +109,7 @@ public:
 
 
     void check_positions_exit(const json& query_data);
+    void render_dashboard();
 
     void adaptive_order(const std::string& side,
                                    const std::string& symbol,
