@@ -217,7 +217,7 @@ void MonitorTrades::connect(){
 
         // === MARKPRICE WS ===
         std::vector<std::string> symbols = {
-            "coaiusdt"
+            "celousdt"
             };
 
         std::string combined="/stream?streams=";
@@ -442,7 +442,7 @@ void MonitorTrades::market_order(const std::string& side,
 
     // === replace the if/else chain ===
     static const std::unordered_map<std::string, double> quantity_map = {
-      {"coaiusdt", pos_amt}
+      {"celousdt", pos_amt}
 
 
     };
@@ -750,7 +750,6 @@ void MonitorTrades::start_async_read() {
                         if (symbol.empty()) continue;
                         snapshot_symbols.insert(symbol);
 
-                        std::cout << pos << std::endl;
 
                         if (posAmt == 0) {
                             std::cout << "✅ " << symbol << " confirmed closed (positionAmt=0)\n";
