@@ -512,6 +512,7 @@ void MonitorTrades::close_trade(
     );
 
     market_order(close_side, symbol, trade.amount, latest_mark_prices_[symbol]);
+    send_confirmation(symbol);
 }
 
 // -------------------------
