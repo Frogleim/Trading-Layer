@@ -37,6 +37,8 @@ EnvData env = load_config(env_path);
 static size_t last_active_count = SIZE_MAX;
 static bool last_had_trades = false;
 
+double WALLET = 2000;
+
 // ====== Static configuration ======
 const std::string MonitorTrades::API_KEY    = env.is_testnet ? env.test_api_key    : env.api_key;
 const std::string MonitorTrades::API_SECRET = env.is_testnet ? env.test_api_secret : env.api_secret;
@@ -502,14 +504,34 @@ void MonitorTrades::close_trade(
               << " reason=" << reason
               << " mark hit\n";
 
+
+    double exit_price = latest_mark_prices_[symbol];
+    double pnl = 0.0;
+
+    if (trade.side == "LONG" || trade.side == "BUY") {
+        pnl = (exit_price - trade.entry) * trade.amount;
+    } else {
+        pnl = (trade.entry - exit_price) * trade.amount;
+    }
+
+    double final_wallet = WALLET + pnl;
+    std::ostringstream w;
+    w << std::fixed << std::setprecision(2) << final_wallet;
     Telegram telegram;
     telegram.send_msg(
-        "🚨 " + symbol +
-        " " + reason +
-        " hit | entry=" + std::to_string(trade.entry) +
-        " tp=" + std::to_string(trade.tp) +
-        " sl=" + std::to_string(trade.sl)
-    );
+    "🚨 POSITION CLOSED\n"
+    "━━━━━━━━━━━━━━\n"
+    "📌 Symbol: " + symbol + "\n"
+    "📉 Reason: " + reason + " hit\n"
+    "\n"
+    "💰 Entry: " + format_price(trade.entry, symbol) + "\n"
+    "📤 Exit (mark): " + format_price(exit_price, symbol) + "\n"
+    "\n"
+    "📊 PnL (est): " + std::to_string(pnl) + " USDT\n"
+    "🎯 TP: " + format_price(trade.tp, symbol) + "\n"
+    "🛑 SL: " + format_price(trade.sl, symbol) + "\n"
+    "💳 Wallet: " + w.str() + "USDT" + "\n"
+);
 
     market_order(close_side, symbol, trade.amount, latest_mark_prices_[symbol]);
     send_confirmation(symbol);
@@ -738,7 +760,6 @@ void MonitorTrades::check_positions_exit(const json& query_data) {
             active_trades_.erase(symbol);
             algo_orders_created_.erase(symbol);
             send_confirmation(symbol);
-            telegram.send_msg("Position disappeared from Binance: " + symbol);
             continue;
         }
 
@@ -869,10 +890,13 @@ void MonitorTrades::start_async_read() {
                         std::string close_side;
                         std::cout << "TP: " << t.tp << std::endl;
                         std::cout << "SL: " << t.sl << std::endl;
-                        if (posAmt > 0)
-                            close_side = "SELL";
-                        else
-                            close_side = "BUY";
+
+
+                        // Algo conditional market orders
+                        // if (posAmt > 0)
+                        //     close_side = "SELL";
+                        // else
+                        //     close_side = "BUY";
                         //
                         // algo_SL_orders(close_side, symbol, pos_amt,  t.sl);
                         // algo_TP_orders(close_side, symbol, pos_amt,  t.tp);
