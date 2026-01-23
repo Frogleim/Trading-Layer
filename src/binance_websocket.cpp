@@ -50,39 +50,7 @@ const std::string MonitorTrades::TARGET = "/ws-fapi/v1";  // private WebSocket e
 const double TP = env.TP;
 const double SL = env.SL;
 constexpr double SL_BUFFER = 0.001;
-// ====== Global ASIO/Beast objects ======
-namespace {
-    net::io_context ioc;
-    ssl::context ctx(ssl::context::tlsv12_client);
-}
 
-
-struct VolatilityTracker {
-    std::deque<double> prices;
-    size_t max_window = 20; // 20 recent marks (~20 seconds if @1s updates)
-
-    void add(double price) {
-        if (prices.size() >= max_window)
-            prices.pop_front();
-        prices.push_back(price);
-    }
-
-    double get_volatility() const {
-        if (prices.size() < 2) return 0.0;
-        std::vector<double> returns;
-        returns.reserve(prices.size() - 1);
-        for (size_t i = 1; i < prices.size(); ++i) {
-            double r = std::log(prices[i] / prices[i - 1]);
-            returns.push_back(r);
-        }
-        double mean = std::accumulate(returns.begin(), returns.end(), 0.0) / returns.size();
-        double var = 0.0;
-        for (double r : returns)
-            var += (r - mean) * (r - mean);
-        var /= returns.size();
-        return std::sqrt(var);
-    }
-};
 
 
 void MonitorTrades::render_dashboard() {
@@ -156,66 +124,9 @@ std::string format_price(double price, const std::string& symbol) {
     return oss.str();
 }
 
-std::unordered_map<std::string, VolatilityTracker> vola_map;
 std::unordered_map<std::string, OrderBookInfo> orderbook_;
 std::unordered_map<std::string, OrderBookLogs> order_book_logger_;
 
-
-// ====== Utility ======
-std::pair<double, double> calculate_sl_tp(const std::string& side,
-                                          double entry_price,
-                                          double mark_price,
-                                          const std::string& symbol)
-{
-    // === constants ===
-    const double min_pct = 0.001;  // 0.1%
-    const double max_pct = 0.01;   // 1.0%
-    const double k_tp = 2.0;       // TP multiplier
-    const double k_sl = 1.0;       // SL multiplier
-
-    // --- get recent volatility ---
-    double vol = 0.001;
-    if (auto it = vola_map.find(symbol); it != vola_map.end())
-        vol = it->second.get_volatility();
-
-    // convert to percentage form
-    double vol_pct = std::clamp(vol * 100.0, min_pct, max_pct);
-
-    // compute base TP/SL in % of entry
-    double tp_pct = std::clamp(k_tp * vol_pct, min_pct, max_pct);
-    double sl_pct = std::clamp(k_sl * vol_pct, min_pct / 2, max_pct / 2);
-
-    // add liquidity factor if order book data available
-    double spread_factor = 1.0;
-    if (orderbook_.count(symbol)) {
-        double bid = orderbook_[symbol].best_bid;
-        double ask = orderbook_[symbol].best_ask;
-        double spread = (ask - bid) / ((ask + bid) / 2.0);
-        spread_factor = std::clamp(1.0 - spread * 100.0, 0.8, 1.2);
-    }
-
-    tp_pct *= spread_factor;
-    sl_pct *= spread_factor;
-
-    // --- compute actual prices ---
-    double tp_price = 0.0;
-    double sl_price = 0.0;
-    if (side == "LONG") {
-        tp_price = entry_price * (1.0 + tp_pct);
-        sl_price = entry_price * (1.0 - sl_pct);
-    } else if (side == "SHORT") {
-        tp_price = entry_price * (1.0 - tp_pct);
-        sl_price = entry_price * (1.0 + sl_pct);
-    }
-
-    // Optional debug log
-    std::cout << "⚙️ [" << symbol << "] vol=" << vol
-              << " tp%=" << tp_pct * 100
-              << "% sl%=" << sl_pct * 100
-              << "% spreadFactor=" << spread_factor << std::endl;
-
-    return {tp_price, sl_price};
-}
 
 // ====== Class Implementation ======
 MonitorTrades::MonitorTrades()
@@ -319,37 +230,14 @@ void MonitorTrades::start_markprice_read() {
                     const auto& d = j["data"];
                     std::string symbol = d.value("s", "");
                     std::transform(symbol.begin(), symbol.end(), symbol.begin(), ::tolower);
-                    // === DEPTH STREAM ===
-                    if (stream.find("@depth") != std::string::npos) {
-                        if (d.contains("b") && d.contains("a")) {
-                            const auto& bids = d["b"];
-                            const auto& asks = d["a"];
-                            if (!bids.empty() && !asks.empty()) {
-                                double best_bid = std::stod(bids[0][0].get<std::string>());
-                                double best_ask = std::stod(asks[0][0].get<std::string>());
-
-                                orderbook_[symbol].best_bid = best_bid;
-                                orderbook_[symbol].best_ask = best_ask;
-
-                                double mid = (best_bid + best_ask) / 2.0;
-                                double spread_pct = mid > 0 ? ((best_ask - best_bid) / mid * 100.0) : 0.0;
-
-
-                            }
-                        }
-                    }
-
-                    // === MARK PRICE STREAM ===
-                    else if (stream.find("@markPrice") != std::string::npos) {
+                   if (stream.find("@markPrice") != std::string::npos) {
                         double mark_price = std::stod(d.value("p", "0"));
-                        std::cout <<mark_price <<"\n";
                         if (mark_price <= 0.0) {
                             start_markprice_read();
                             return;
                         }
 
                         latest_mark_prices_[symbol] = mark_price;
-                        vola_map[symbol].add(mark_price);
                         if (active_trades_.count(symbol)) {
                                 auto& trade = active_trades_.at(symbol);
 
@@ -480,7 +368,6 @@ void MonitorTrades::query_position() {
 
         try {
             ws_->write(net::buffer(req.dump()));
-            std::cout << "📤 Requested account positions...\n";
         } catch (const std::exception& e) {
             std::cerr << "❌ query_position error: " << e.what() << std::endl;
         }
@@ -525,8 +412,7 @@ void MonitorTrades::market_order(const std::string& side,
         std::cerr << "⚠️ Not connected, skipping close order.\n";
         return;
     }
-
-    // === replace the if/else chain ===
+   // === replace the if/else chain ===
     static const std::unordered_map<std::string, double> quantity_map = {
       {"celousdt", pos_amt}
 
@@ -579,7 +465,7 @@ void MonitorTrades::handle_external_signal(const std::string& symbol,
                                            const std::string& side,
                                            double tp, double sl)
 {
-    double amount = pos_amt; // or your qty map
+    double amount = pos_amt;
 
     std::cout << "🎯 External Signal Received:\n"
               << " symbol=" << symbol
@@ -588,17 +474,17 @@ void MonitorTrades::handle_external_signal(const std::string& symbol,
               << " SL="     << sl
               << std::endl;
 
-    // Get current mark price for entry
+
     std::string close_side;
     std::string symbol_lower = to_lower_symbol(symbol);
     double mark = latest_mark_prices_[symbol];
 
-    // Store active trade immediately
+
     ActiveTrade t;
     t.side   = side;
     t.entry  = mark;
-    t.tp     = tp;   // ★ received from ZMQ
-    t.sl     = sl;   // ★ received from ZMQ
+    t.tp     = tp;
+    t.sl     = sl;
     t.amount = amount;
 
     active_trades_[symbol] = t;
@@ -629,7 +515,9 @@ void MonitorTrades::algo_SL_orders(const std::string &side, const std::string &s
     }
 
 
-    Logger::info("Algo order params: \nSymbol: " + symbol + + "SL: " + std::to_string(sl) + "\nSide: " + side + "\nQuantity: " +
+    Logger::info("Algo SL order params: \nSymbol: "
+        + symbol + + " SL: " + std::to_string(sl)
+        + "\nSide: " + side + "\nQuantity: " +
         std::to_string(quantity));
 
 
@@ -644,7 +532,7 @@ void MonitorTrades::algo_SL_orders(const std::string &side, const std::string &s
         {"positionSide", "BOTH"},
         {"closePosition", "true"},
         {"type", "STOP_MARKET"},
-        {"triggerPrice", std::to_string(sl)},   // ← REQUIRED!!!
+        {"triggerPrice", std::to_string(sl)},
         {"timestamp", std::to_string(ts)},
     };
     params["signature"] = generate_signature(params, API_SECRET);
@@ -655,6 +543,7 @@ void MonitorTrades::algo_SL_orders(const std::string &side, const std::string &s
     };
     try {
         ws_->write(net::buffer(req.dump()));
+
         std::cout << "📤 Sent Algo order: "
                   << side << " " << symbol
                   << " qty=" << quantity
@@ -676,7 +565,7 @@ double &tp) {
         return;
     }
 
-    logger.info("Algo order params: \nSymbol: " + symbol + + "TP: " + std::to_string(tp) +
+    logger.info("Algo order params: \nSymbol: " + symbol + + " TP: " + std::to_string(tp) +
         "\nSide: " + side + "\nQuantity: " +
         std::to_string(quantity)) ;
 
@@ -716,15 +605,14 @@ double &tp) {
 
 void MonitorTrades::check_positions_exit(const json& query_data) {
     Telegram telegram;
+    if (!query_data.is_object() || !query_data.contains("result")) return;
 
-    bool has_result = query_data.contains("result");
-    bool empty_result = false;
+    const auto& result = query_data["result"];
 
-    if (has_result && query_data.at("result").is_array()) {
-        empty_result = query_data.at("result").empty();
-    }
+    // This function only handles position snapshots
+    if (!result.is_array()) return;
 
-    // Iterate through your global SYMBOLS map
+    bool empty_result = result.empty();
     for (const auto& [symbol, qty] : this->SYMBOLS) {
 
         bool has_active = active_trades_.count(symbol) > 0;
@@ -733,14 +621,15 @@ void MonitorTrades::check_positions_exit(const json& query_data) {
         // ----------------------------
         // CASE 1: Binance shows NO position → remove stale local state
         // ----------------------------
-        if (empty_result && has_active) {
-            Logger::info("❌ Binance shows no position. Removing local trade for " + symbol);
-            active_trades_.erase(symbol);
-            algo_orders_created_.erase(symbol);
-            send_confirmation(symbol);
-            telegram.send_msg("Position disappeared from Binance: " + symbol);
-            continue;
+            if (empty_result && has_active) {
+                Logger::info("❌ Binance shows no position. Removing local trade for " + symbol);
+                active_trades_.erase(symbol);
+                algo_orders_created_.erase(symbol);
+                send_confirmation(symbol);
+                telegram.send_msg("Position disappeared from Binance: " + symbol);
+                continue;
         }
+
 
         // ----------------------------
         // CASE 2: Binance shows position but local state missing
@@ -801,9 +690,18 @@ void MonitorTrades::start_async_read() {
             try {
                 Telegram telegram;
                 auto j = nlohmann::json::parse(msg);
+                // 🔥 LOG ALL RESPONSES
+                if (j.contains("id")) {
+                    std::cout << "📥 Binance RESPONSE:\n"
+                              << j.dump(2) << std::endl;
+                }
                 net::post(io_private_, [this, j]() {
                         check_positions_exit(j);
                 });
+
+
+
+
 
 
                 // 🧩 1️⃣ Handle order updates (status FILLED, CANCELED, etc.)
@@ -812,7 +710,7 @@ void MonitorTrades::start_async_read() {
                     if (r.contains("symbol") && r.contains("status")) {
                         std::string sym    = r.value("symbol", "");
                         std::string status = r.value("status", "");
-                        if (status == "FILLED" || status == "PARTIALLY_FILLED" || status == "CANCELED") {
+                        if (status == "FILLED" || status == "NEW" || status == "CANCELED") {
                             logger.info("Position: " + status + " | " + sym + " | " + status);
                             if (closing_trades_.erase(sym))
                                 std::cout << "✅ Order fill confirmed, unlocking " << sym << std::endl;
@@ -823,15 +721,17 @@ void MonitorTrades::start_async_read() {
 
                 if (j.contains("result") && j["result"].is_array()) {
                     std::unordered_set<std::string> snapshot_symbols;
-
                     for (const auto& pos : j["result"]) {
                         std::string symbol   = to_lower_symbol(pos.value("symbol", ""));
-                        double entry         = std::stod(pos.value("entryPrice", "0"));
                         double posAmt        = std::stod(pos.value("positionAmt", "0"));
-                        double markPrice     = std::stod(pos.value("markPrice", "0"));
                         if (symbol.empty()) continue;
                         snapshot_symbols.insert(symbol);
-
+                        double tp_price = active_trades_[symbol].tp;
+                        double sl_price = active_trades_[symbol].sl;
+                        std::string closing_side;
+                        std::string close_side = (posAmt > 0) ? "SELL" : "BUY";
+                        algo_SL_orders(close_side, symbol, pos_amt, sl_price);
+                        algo_TP_orders(close_side, symbol, pos_amt, tp_price);
 
                         if (posAmt == 0) {
                             std::cout << "✅ " << symbol << " confirmed closed (positionAmt=0)\n";
@@ -839,7 +739,6 @@ void MonitorTrades::start_async_read() {
                             active_trades_.erase(symbol);
                             continue;
                         }
-
                         if (closing_trades_.count(symbol)) {
                             std::cout << "⏳ Waiting for close confirmation: " << symbol << std::endl;
                             continue;
@@ -850,45 +749,15 @@ void MonitorTrades::start_async_read() {
                         if (posAmt == 0) {
                             state_changed = true;
                         }
-
                         if (!active_trades_.empty()) {
                             state_changed = true;
                         }
-
                         if (state_changed)
                             render_dashboard();
 
-                        ActiveTrade t;
-                        t.side   = posAmt > 0 ? "LONG" : "SHORT";
-                        t.entry  = entry;
-                        t.amount = std::abs(posAmt);
-                        t.tp = active_trades_[symbol].tp;
-                        t.sl = active_trades_[symbol].sl;
 
-                        active_trades_[symbol] = t;
-                        std::string close_side;
-                        std::cout << "TP: " << t.tp << std::endl;
-                        std::cout << "SL: " << t.sl << std::endl;
-                        if (posAmt > 0)
-                            close_side = "SELL";
-                        else
-                            close_side = "BUY";
-                        //
-                        // algo_SL_orders(close_side, symbol, pos_amt,  t.sl);
-                        // algo_TP_orders(close_side, symbol, pos_amt,  t.tp);
-
-
-
-                        std::cout << "📊 Position Update: "
-                                  << symbol
-                                  << " | entry=" << entry
-                                  << " | amt=" << posAmt
-                                  << " | mark=" << markPrice
-                                    << " TP price: " << t.tp
-                                    << " SL Price " << t.sl << std::endl;
                     }
 
-                    // --- E. Confirm fully closed positions (not found in snapshot) ---
                     for (auto it = closing_trades_.begin(); it != closing_trades_.end(); ) {
                         if (!snapshot_symbols.count(it->first)) {
                             std::cout << "✅ " << it->first << " missing in snapshot — confirmed closed.\n";
@@ -897,16 +766,8 @@ void MonitorTrades::start_async_read() {
                             ++it;
                         }
                     }
-
-
-
-
-
-
                 }
-                else if (!j.contains("result")) {
-                    std::cout << "📩 Other message: " << msg << std::endl;
-                }
+
             }
             catch (std::exception& e) {
                 std::cerr << "❌ JSON parse error: " << e.what()
@@ -917,7 +778,6 @@ void MonitorTrades::start_async_read() {
         });
 }
 
-// -------------------------
 void MonitorTrades::run_event_loop() {
     // just block main thread until background I/O threads finish
     if (thread_private_.joinable()) thread_private_.join();
